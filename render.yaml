@@ -1,8 +1,20 @@
-# Render Blueprint — deploys the APP and ADMIN as two separate static sites.
-# (The marketing LANDING is deployed on Cloudflare Pages — see DEPLOY.md.)
-# In Render: New → Blueprint → point at this repo, then set the two env vars
-# on each service (Supabase → Project Settings → API).
+# Render Blueprint — deploys all three sites as separate static services:
+#   bilisops-landing → hr.bilisops.com     (marketing + register)
+#   bilisops-app     → app.bilisops.com    (login + dashboard)
+#   bilisops-admin   → admin.bilisops.com  (registrations backoffice)
+# Custom domains: add each in the service's Settings → Custom Domains, then
+# create the CNAME records Render shows you in Hostinger's DNS zone editor.
 services:
+  - type: web
+    name: bilisops-landing
+    runtime: static
+    buildCommand: npm ci && npm run build:landing
+    staticPublishPath: dist-landing
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
   - type: web
     name: bilisops-app
     runtime: static

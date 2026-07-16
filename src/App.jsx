@@ -494,8 +494,18 @@ function BrandMark({ className="w-10 h-10 rounded-2xl", inverted=false }) {
 }
 
 function LandingPage({ onSelect }) {
+  const [showRegister,setShowRegister]=useState(false);
   return (
     <div className="scene-3d-light relative min-h-screen bg-gradient-to-b from-white via-mist to-brand-50 overflow-y-auto">
+      {/* Register popup — sign-ups happen right here on the landing, no redirect */}
+      {showRegister&&(
+        <div className="fixed inset-0 bg-slate-900/30 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto" onClick={()=>setShowRegister(false)}>
+          <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-lg p-8 sm:p-10 my-8 rise" onClick={e=>e.stopPropagation()}>
+            <button onClick={()=>setShowRegister(false)} title="Close" className="absolute top-5 right-5 w-9 h-9 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 flex items-center justify-center font-bold">✕</button>
+            <RegisterForm onSignIn={()=>{setShowRegister(false);onSelect("admin-login");}} onAfterDone={()=>setShowRegister(false)} afterDoneLabel="Done"/>
+          </div>
+        </div>
+      )}
       <div className="grid-floor-light"/>
       {/* Top bar */}
       <header className="relative z-10 max-w-6xl mx-auto px-6 sm:px-8 h-20 flex items-center justify-between">
@@ -509,7 +519,7 @@ function LandingPage({ onSelect }) {
         <div className="flex items-center gap-2">
           <a href="#offer" className="hidden sm:inline-flex text-sm font-bold text-gray-600 hover:text-brand-700 px-4 py-2.5 transition-colors">Solutions</a>
           <button onClick={()=>onSelect("admin-login")} className="text-sm font-bold text-gray-600 hover:text-brand-700 px-4 py-2.5 transition-colors">Sign in</button>
-          <button onClick={()=>onSelect("register")} className="flex items-center gap-2 bg-brand-500 text-white text-sm font-bold px-5 py-2.5 rounded-full hover:bg-brand-600 transition-colors shadow-brand">Register <span>→</span></button>
+          <button onClick={()=>setShowRegister(true)} className="flex items-center gap-2 bg-brand-500 text-white text-sm font-bold px-5 py-2.5 rounded-full hover:bg-brand-600 transition-colors shadow-brand">Register <span>→</span></button>
         </div>
       </header>
 
@@ -525,7 +535,7 @@ function LandingPage({ onSelect }) {
           BilisOps builds HRIS and custom HR tools — payroll, attendance, and everything your team runs on. One platform, tailored to how you work.
         </p>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mt-8">
-          <button onClick={()=>onSelect("register")} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-brand-500 text-white text-sm font-bold px-7 py-3.5 rounded-full hover:bg-brand-600 transition-colors shadow-brand"><Icon name="userplus" className="w-5 h-5"/> Get started free</button>
+          <button onClick={()=>setShowRegister(true)} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-brand-500 text-white text-sm font-bold px-7 py-3.5 rounded-full hover:bg-brand-600 transition-colors shadow-brand"><Icon name="userplus" className="w-5 h-5"/> Get started free</button>
           <button onClick={()=>onSelect("admin-login")} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-white text-ink text-sm font-bold px-7 py-3.5 rounded-full border border-gray-200 hover:border-brand-300 transition-colors shadow-sm"><Icon name="dashboard" className="w-5 h-5"/> See the demo</button>
         </div>
       </section>
@@ -619,7 +629,8 @@ function LandingPage({ onSelect }) {
 // REGISTER — a visitor requests an account. Saved to `registrations` as pending;
 // a super admin approves it in the admin panel, which creates the login.
 // ════════════════════════════════════════════════════════════════════════════
-function RegisterPage({ onBack, onDone, addToast }) {
+// The form itself — reused by the standalone RegisterPage AND the landing's popup.
+function RegisterForm({ onSignIn, onAfterDone, afterDoneLabel="Back to sign in →", addToast }) {
   const [f,setF]=useState({name:"",company:"",email:"",username:"",password:""});
   const [show,setShow]=useState(false); const [err,setErr]=useState(""); const [loading,setLoading]=useState(false); const [done,setDone]=useState(false);
   const set=(k,v)=>{ setF(p=>({...p,[k]:v})); setErr(""); };
@@ -639,6 +650,48 @@ function RegisterPage({ onBack, onDone, addToast }) {
     }catch(e){ setErr("Failed: "+e.message); }
     setLoading(false);
   };
+  if (done) return (
+    <div className="flex flex-col items-center text-center py-6">
+      <div className="w-16 h-16 bg-brand-50 text-brand-600 rounded-2xl flex items-center justify-center mb-5"><Icon name="check" className="w-8 h-8"/></div>
+      <h1 className="text-2xl font-black text-ink">Registration submitted</h1>
+      <p className="text-gray-500 text-sm mt-2 max-w-xs">Thanks, {f.name.split(" ")[0]}! An admin will review your request and activate your account.</p>
+      <button onClick={onAfterDone} className="mt-6 bg-brand-500 text-white font-bold px-6 py-3 rounded-2xl hover:bg-brand-600 transition-colors text-sm shadow-brand">{afterDoneLabel}</button>
+    </div>
+  );
+  return (
+    <>
+      <div className="w-12 h-12 bg-brand-50 text-brand-600 rounded-2xl flex items-center justify-center mb-4"><Icon name="userplus" className="w-6 h-6"/></div>
+      <h1 className="text-2xl font-black text-ink">Create your account</h1>
+      <p className="text-gray-500 text-sm mt-1 mb-6">It only takes a minute.</p>
+      <div className="space-y-4">
+        {err&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-2xl">⚠ {err}</div>}
+        <div className="grid sm:grid-cols-2 gap-4">
+          <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Full name</label>
+            <input value={f.name} onChange={e=>set("name",e.target.value)} placeholder="Juan Dela Cruz" className="w-full border border-gray-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 bg-gray-50"/></div>
+          <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Company</label>
+            <input value={f.company} onChange={e=>set("company",e.target.value)} placeholder="Optional" className="w-full border border-gray-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 bg-gray-50"/></div>
+        </div>
+        <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Email</label>
+          <input type="email" value={f.email} onChange={e=>set("email",e.target.value)} placeholder="you@company.com" className="w-full border border-gray-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 bg-gray-50"/></div>
+        <div className="grid sm:grid-cols-2 gap-4">
+          <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Username</label>
+            <input value={f.username} onChange={e=>set("username",e.target.value)} placeholder="Choose a username" className="w-full border border-gray-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 bg-gray-50"/></div>
+          <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Password</label>
+            <div className="relative">
+              <input type={show?"text":"password"} value={f.password} onChange={e=>set("password",e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="Min. 6 characters" className="w-full border border-gray-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 bg-gray-50 pr-12"/>
+              <button type="button" onClick={()=>setShow(s=>!s)} className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400">{show?"🙈":"👁"}</button>
+            </div>
+          </div>
+        </div>
+        <button onClick={submit} disabled={loading} className="w-full bg-brand-500 text-white font-bold py-3.5 rounded-2xl hover:bg-brand-600 disabled:opacity-60 transition-all active:scale-[0.98] text-sm shadow-brand">{loading?"Submitting…":"Create account →"}</button>
+        <p className="text-center text-xs text-gray-400">Already have an account? <button onClick={onSignIn} className="font-bold text-brand-600 hover:text-brand-700">Sign in</button></p>
+      </div>
+    </>
+  );
+}
+
+// Standalone register page (used by the ?screen=register deep link on the app domain).
+function RegisterPage({ onBack, onDone, addToast }) {
   return (
     <div className="scene-3d-light min-h-screen bg-gradient-to-br from-white via-mist to-brand-50 flex items-center justify-center p-4 sm:p-6">
       <div className="grid-floor-light"/>
@@ -664,43 +717,7 @@ function RegisterPage({ onBack, onDone, addToast }) {
         {/* Form panel */}
         <div className="p-8 sm:p-10">
           {onBack&&<button onClick={onBack} className="flex items-center gap-2 text-gray-400 hover:text-brand-600 text-sm font-semibold mb-6 transition-colors">← Back</button>}
-          {done?(
-            <div className="flex flex-col items-center text-center py-6">
-              <div className="w-16 h-16 bg-brand-50 text-brand-600 rounded-2xl flex items-center justify-center mb-5"><Icon name="check" className="w-8 h-8"/></div>
-              <h1 className="text-2xl font-black text-ink">Registration submitted</h1>
-              <p className="text-gray-500 text-sm mt-2 max-w-xs">Thanks, {f.name.split(" ")[0]}! An admin will review your request and activate your account.</p>
-              <button onClick={onDone} className="mt-6 bg-brand-500 text-white font-bold px-6 py-3 rounded-2xl hover:bg-brand-600 transition-colors text-sm shadow-brand">Back to sign in →</button>
-            </div>
-          ):(
-          <>
-            <div className="w-12 h-12 bg-brand-50 text-brand-600 rounded-2xl flex items-center justify-center mb-4"><Icon name="userplus" className="w-6 h-6"/></div>
-            <h1 className="text-2xl font-black text-ink">Create your account</h1>
-            <p className="text-gray-500 text-sm mt-1 mb-6">It only takes a minute.</p>
-            <div className="space-y-4">
-              {err&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-2xl">⚠ {err}</div>}
-              <div className="grid sm:grid-cols-2 gap-4">
-                <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Full name</label>
-                  <input value={f.name} onChange={e=>set("name",e.target.value)} placeholder="Juan Dela Cruz" className="w-full border border-gray-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 bg-gray-50"/></div>
-                <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Company</label>
-                  <input value={f.company} onChange={e=>set("company",e.target.value)} placeholder="Optional" className="w-full border border-gray-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 bg-gray-50"/></div>
-              </div>
-              <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Email</label>
-                <input type="email" value={f.email} onChange={e=>set("email",e.target.value)} placeholder="you@company.com" className="w-full border border-gray-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 bg-gray-50"/></div>
-              <div className="grid sm:grid-cols-2 gap-4">
-                <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Username</label>
-                  <input value={f.username} onChange={e=>set("username",e.target.value)} placeholder="Choose a username" className="w-full border border-gray-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 bg-gray-50"/></div>
-                <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Password</label>
-                  <div className="relative">
-                    <input type={show?"text":"password"} value={f.password} onChange={e=>set("password",e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="Min. 6 characters" className="w-full border border-gray-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 bg-gray-50 pr-12"/>
-                    <button type="button" onClick={()=>setShow(s=>!s)} className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400">{show?"🙈":"👁"}</button>
-                  </div>
-                </div>
-              </div>
-              <button onClick={submit} disabled={loading} className="w-full bg-brand-500 text-white font-bold py-3.5 rounded-2xl hover:bg-brand-600 disabled:opacity-60 transition-all active:scale-[0.98] text-sm shadow-brand">{loading?"Submitting…":"Create account →"}</button>
-              <p className="text-center text-xs text-gray-400">Already have an account? <button onClick={onDone} className="font-bold text-brand-600 hover:text-brand-700">Sign in</button></p>
-            </div>
-          </>
-          )}
+          <RegisterForm onSignIn={onDone} onAfterDone={onDone} addToast={addToast}/>
         </div>
       </div>
     </div>

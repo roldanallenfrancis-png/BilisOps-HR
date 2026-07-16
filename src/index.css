@@ -10,7 +10,7 @@
    ══════════════════════════════════════════════════════════════════════════ */
 
 /* Animated brand gradient mesh for full-screen dark scenes (landing/login/kiosk) */
-.scene-3d { position: relative; overflow: hidden; }
+.scene-3d { position: relative; overflow: clip; }
 .scene-3d::before,
 .scene-3d::after {
   content: "";
@@ -43,8 +43,10 @@
   50%     { transform: translate3d(-5rem,-3rem,0) scale(1.15); }
 }
 
-/* Light-scene variant: soft green ambience on a white background */
-.scene-3d-light { position: relative; overflow: hidden; }
+/* Light-scene variant: soft green ambience on a white background.
+   overflow: clip (not hidden) — clips the glow orbs but can NEVER become a
+   scroll container, so page scrolling/anchors always act on the window. */
+.scene-3d-light { position: relative; overflow: clip; }
 .scene-3d-light::before,
 .scene-3d-light::after {
   content: "";

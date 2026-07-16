@@ -496,7 +496,7 @@ function BrandMark({ className="w-10 h-10 rounded-2xl", inverted=false }) {
 function LandingPage({ onSelect }) {
   const [showRegister,setShowRegister]=useState(false);
   return (
-    <div className="scene-3d-light relative min-h-screen bg-gradient-to-b from-white via-mist to-brand-50 overflow-y-auto">
+    <div className="scene-3d-light relative min-h-screen bg-gradient-to-b from-white via-mist to-brand-50">
       {/* Register popup — sign-ups happen right here on the landing, no redirect */}
       {showRegister&&(
         <div className="fixed inset-0 bg-slate-900/30 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto" onClick={()=>setShowRegister(false)}>
@@ -507,21 +507,25 @@ function LandingPage({ onSelect }) {
         </div>
       )}
       <div className="grid-floor-light"/>
-      {/* Top bar */}
-      <header className="relative z-10 max-w-6xl mx-auto px-6 sm:px-8 h-20 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <BrandMark className="w-10 h-10 rounded-2xl"/>
-          <div className="leading-tight">
-            <div className="text-lg font-black text-ink tracking-tight">BilisOps</div>
-            <div className="text-[11px] font-bold text-brand-600 -mt-0.5">Smart Attendance</div>
+      {/* Top bar — sticky so the brand and actions stay visible while scrolling */}
+      <header className="!fixed top-0 inset-x-0 z-40 bg-white/85 backdrop-blur border-b border-gray-100">
+        <div className="max-w-6xl mx-auto px-6 sm:px-8 h-16 sm:h-20 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <BrandMark className="w-10 h-10 rounded-2xl"/>
+            <div className="leading-tight">
+              <div className="text-lg font-black text-ink tracking-tight">BilisOps</div>
+              <div className="text-[11px] font-bold text-brand-600 -mt-0.5">Smart Attendance</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={()=>{const el=document.getElementById('offer'); if(el) window.scrollTo({top: el.getBoundingClientRect().top + window.scrollY - 96, behavior:'smooth'});}} className="hidden sm:inline-flex text-sm font-bold text-gray-600 hover:text-brand-700 px-4 py-2.5 transition-colors">Solutions</button>
+            <button onClick={()=>onSelect("admin-login")} className="text-sm font-bold text-gray-600 hover:text-brand-700 px-4 py-2.5 transition-colors">Sign in</button>
+            <button onClick={()=>setShowRegister(true)} className="flex items-center gap-2 bg-brand-500 text-white text-sm font-bold px-5 py-2.5 rounded-full hover:bg-brand-600 transition-colors shadow-brand">Register <span>→</span></button>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <a href="#offer" className="hidden sm:inline-flex text-sm font-bold text-gray-600 hover:text-brand-700 px-4 py-2.5 transition-colors">Solutions</a>
-          <button onClick={()=>onSelect("admin-login")} className="text-sm font-bold text-gray-600 hover:text-brand-700 px-4 py-2.5 transition-colors">Sign in</button>
-          <button onClick={()=>setShowRegister(true)} className="flex items-center gap-2 bg-brand-500 text-white text-sm font-bold px-5 py-2.5 rounded-full hover:bg-brand-600 transition-colors shadow-brand">Register <span>→</span></button>
-        </div>
       </header>
+      {/* Spacer for the fixed header */}
+      <div className="h-16 sm:h-20"/>
 
       {/* Hero */}
       <section className="relative z-10 max-w-3xl mx-auto px-6 text-center pt-10 sm:pt-16 pb-12 rise">

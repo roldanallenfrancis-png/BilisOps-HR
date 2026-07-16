@@ -1,0 +1,10 @@
+node_modules
+dist
+dist-landing
+dist-app
+dist-admin
+.env
+.DS_Store
+*.apk
+
+.claude/settings.local.json

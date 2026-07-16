@@ -1,0 +1,42 @@
+{
+  "name": "attendance-app",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:landing": "vite --mode landing --port 5180 --strictPort",
+    "dev:app": "vite --mode app --port 5181 --strictPort",
+    "dev:admin": "vite --mode admin --port 5182 --strictPort",
+    "build": "vite build",
+    "build:landing": "vite build --mode landing --outDir dist-landing --emptyOutDir",
+    "build:app": "vite build --mode app --outDir dist-app --emptyOutDir",
+    "build:admin": "vite build --mode admin --outDir dist-admin --emptyOutDir",
+    "build:sites": "npm run build:landing && npm run build:app && npm run build:admin",
+    "build:qr": "vite build --mode qr",
+    "build:facial": "vite build --mode facial",
+    "build:apk": "vite build --mode kiosk",
+    "preview": "vite preview",
+    "android:sync": "vite build && npx cap sync android",
+    "android:open": "npm run android:sync && npx cap open android",
+    "android:qr": "npm run build:qr && npx cap sync android && npx cap open android",
+    "android:facial": "npm run build:facial && npx cap sync android && npx cap open android",
+    "android:apk": "npm run build:apk && npx cap sync android && npx cap open android"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "@capacitor/android": "^8.4.1",
+    "@capacitor/cli": "^8.4.1",
+    "@capacitor/core": "^8.4.1",
+    "@vladmandic/face-api": "^1.7.15",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "vite": "^5.4.8"
+  }
+}

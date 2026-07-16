@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Allen Connect Kiosk</string>
+    <string name="title_activity_main">Allen Connect Kiosk</string>
+    <string name="package_name">com.allenconnect.attendancekiosk</string>
+    <string name="custom_url_scheme">com.allenconnect.attendancekiosk</string>
+</resources>

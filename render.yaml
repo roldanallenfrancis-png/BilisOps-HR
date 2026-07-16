@@ -1,0 +1,34 @@
+# Render Blueprint — deploys the APP and ADMIN as two separate static sites.
+# (The marketing LANDING is deployed on Cloudflare Pages — see DEPLOY.md.)
+# In Render: New → Blueprint → point at this repo, then set the two env vars
+# on each service (Supabase → Project Settings → API).
+services:
+  - type: web
+    name: bilisops-app
+    runtime: static
+    buildCommand: npm ci && npm run build:app
+    staticPublishPath: dist-app
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_ANON_KEY
+        sync: false
+
+  - type: web
+    name: bilisops-admin
+    runtime: static
+    buildCommand: npm ci && npm run build:admin
+    staticPublishPath: dist-admin
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_ANON_KEY
+        sync: false

@@ -1,0 +1,139 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Advanced / 3D design layer — depth, glass, glow, and motion.
+   Pure CSS (no libraries) so it stays fast and works offline.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Animated brand gradient mesh for full-screen dark scenes (landing/login/kiosk) */
+.scene-3d { position: relative; overflow: hidden; }
+.scene-3d::before,
+.scene-3d::after {
+  content: "";
+  position: absolute;
+  width: 46rem; height: 46rem;
+  border-radius: 9999px;
+  filter: blur(90px);
+  opacity: 0.55;
+  pointer-events: none;
+  z-index: 0;
+}
+.scene-3d::before {
+  background: radial-gradient(circle at center, #5ac56b, transparent 70%);
+  top: -14rem; left: -10rem;
+  animation: floatA 14s ease-in-out infinite;
+}
+.scene-3d::after {
+  background: radial-gradient(circle at center, #3a9c49, transparent 70%);
+  bottom: -16rem; right: -12rem;
+  animation: floatB 18s ease-in-out infinite;
+}
+.scene-3d > * { position: relative; z-index: 1; }
+
+@keyframes floatA {
+  0%,100% { transform: translate3d(0,0,0) scale(1); }
+  50%     { transform: translate3d(4rem,3rem,0) scale(1.12); }
+}
+@keyframes floatB {
+  0%,100% { transform: translate3d(0,0,0) scale(1); }
+  50%     { transform: translate3d(-5rem,-3rem,0) scale(1.15); }
+}
+
+/* Light-scene variant: soft green ambience on a white background */
+.scene-3d-light { position: relative; overflow: hidden; }
+.scene-3d-light::before,
+.scene-3d-light::after {
+  content: "";
+  position: absolute;
+  width: 42rem; height: 42rem;
+  border-radius: 9999px;
+  filter: blur(100px);
+  opacity: 0.30;
+  pointer-events: none;
+  z-index: 0;
+}
+.scene-3d-light::before {
+  background: radial-gradient(circle at center, #8fe0a0, transparent 70%);
+  top: -16rem; left: -12rem;
+  animation: floatA 16s ease-in-out infinite;
+}
+.scene-3d-light::after {
+  background: radial-gradient(circle at center, #5ac56b, transparent 70%);
+  bottom: -18rem; right: -14rem;
+  animation: floatB 20s ease-in-out infinite;
+}
+.scene-3d-light > * { position: relative; z-index: 1; }
+
+/* Light depth grid (faint slate lines) */
+.grid-floor-light {
+  position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(15,23,42,0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15,23,42,0.045) 1px, transparent 1px);
+  background-size: 46px 46px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 45%, #000 25%, transparent 72%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 45%, #000 25%, transparent 72%);
+}
+
+/* Subtle grid floor for depth */
+.grid-floor {
+  position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 30%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 30%, transparent 75%);
+}
+
+/* Glass card with 3D hover lift + tilt */
+.card-3d {
+  transform-style: preserve-3d;
+  transition: transform .3s cubic-bezier(.2,.7,.2,1), box-shadow .3s ease, border-color .3s ease;
+  will-change: transform;
+}
+.card-3d:hover {
+  transform: perspective(900px) rotateX(4deg) translateY(-6px);
+  box-shadow: 0 30px 60px -20px rgba(0,0,0,.55), 0 0 0 1px rgba(90,197,107,.35);
+}
+.glass {
+  background: rgba(255,255,255,0.06);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+}
+
+/* Elevated light cards for the admin surfaces */
+.lift {
+  transition: transform .25s cubic-bezier(.2,.7,.2,1), box-shadow .25s ease;
+  will-change: transform;
+}
+.lift:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 24px 40px -22px rgba(15,23,42,.35), 0 0 0 1px rgba(90,197,107,.18);
+}
+
+/* Green glow pulse for primary emphasis */
+.glow-brand { box-shadow: 0 0 0 0 rgba(90,197,107,.55); animation: glowPulse 2.6s ease-in-out infinite; }
+@keyframes glowPulse {
+  0%,100% { box-shadow: 0 10px 25px -6px rgba(90,197,107,.45); }
+  50%     { box-shadow: 0 14px 34px -6px rgba(90,197,107,.75); }
+}
+
+/* Gentle float for hero icon */
+.float-y { animation: floaty 5s ease-in-out infinite; }
+@keyframes floaty { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+
+/* Rise-in entrance */
+.rise { animation: rise .6s cubic-bezier(.2,.7,.2,1) both; }
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .scene-3d::before, .scene-3d::after,
+  .scene-3d-light::before, .scene-3d-light::after,
+  .float-y, .glow-brand, .rise { animation: none; }
+  .card-3d:hover, .lift:hover { transform: none; }
+}

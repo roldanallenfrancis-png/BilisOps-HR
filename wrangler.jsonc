@@ -1,0 +1,10 @@
+// Cloudflare Workers config — publishes the LANDING build as a static site.
+// Used by the "Deploy command" (npx wrangler deploy) in Cloudflare's Git flow.
+{
+  "name": "bilisops-hr",
+  "compatibility_date": "2025-01-01",
+  "assets": {
+    "directory": "./dist-landing",
+    "not_found_handling": "single-page-application"
+  }
+}

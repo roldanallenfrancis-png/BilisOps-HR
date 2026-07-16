@@ -499,9 +499,9 @@ function LandingPage({ onSelect }) {
     <div className="scene-3d-light relative min-h-screen bg-gradient-to-b from-white via-mist to-brand-50">
       {/* Register popup — sign-ups happen right here on the landing, no redirect */}
       {showRegister&&(
-        <div className="fixed inset-0 bg-slate-900/30 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto" onClick={()=>setShowRegister(false)}>
-          <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-lg p-8 sm:p-10 my-8 rise" onClick={e=>e.stopPropagation()}>
-            <button onClick={()=>setShowRegister(false)} title="Close" className="absolute top-5 right-5 w-9 h-9 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 flex items-center justify-center font-bold">✕</button>
+        <div className="fixed inset-0 bg-slate-900/20 z-50 flex items-center justify-center p-4" onClick={()=>setShowRegister(false)}>
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[92vh] overflow-y-auto p-6 sm:p-8 rise" onClick={e=>e.stopPropagation()}>
+            <button onClick={()=>setShowRegister(false)} title="Close" className="absolute top-4 right-4 w-9 h-9 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 flex items-center justify-center text-lg">✕</button>
             <RegisterForm onSignIn={()=>{setShowRegister(false);onSelect("admin-login");}} onAfterDone={()=>setShowRegister(false)} afterDoneLabel="Done"/>
           </div>
         </div>
@@ -634,21 +634,30 @@ function LandingPage({ onSelect }) {
 // a super admin approves it in the admin panel, which creates the login.
 // ════════════════════════════════════════════════════════════════════════════
 // The form itself — reused by the standalone RegisterPage AND the landing's popup.
+// Styled like the BilisOps trial form: single column, plain labels, email = login.
 function RegisterForm({ onSignIn, onAfterDone, afterDoneLabel="Back to sign in →", addToast }) {
-  const [f,setF]=useState({name:"",company:"",email:"",username:"",password:""});
+  const [f,setF]=useState({business:"",name:"",email:"",phone:"",password:"",confirm:""});
   const [show,setShow]=useState(false); const [err,setErr]=useState(""); const [loading,setLoading]=useState(false); const [done,setDone]=useState(false);
   const set=(k,v)=>{ setF(p=>({...p,[k]:v})); setErr(""); };
+  const inputCls="w-full border border-gray-300 rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-500 bg-white placeholder:text-gray-400";
+  const labelCls="text-sm font-semibold text-gray-800 block mb-1.5";
   const submit=async()=>{
-    if(!f.name||!f.email||!f.username||!f.password){ setErr("Please fill in name, email, username, and password."); return; }
+    if(!f.business.trim()){ setErr("Business name is required."); return; }
+    if(!f.email.trim()||!/\S+@\S+\.\S+/.test(f.email)){ setErr("Enter a valid email address."); return; }
     if(f.password.length<6){ setErr("Password must be at least 6 characters."); return; }
+    if(f.password!==f.confirm){ setErr("Passwords do not match."); return; }
     setLoading(true); setErr("");
     try{
-      const {data:existing}=await supabase.from('admin_accounts').select('id').eq('username',f.username.trim()).maybeSingle();
-      if(existing){ setErr("That username is already taken."); setLoading(false); return; }
-      const {error}=await supabase.from('registrations').insert({
-        name:f.name.trim(), company:f.company.trim(), email:f.email.trim(),
-        username:f.username.trim(), password_hash:btoa(f.password), role:'admin', status:'pending',
-      });
+      const email=f.email.trim().toLowerCase();
+      const {data:existing}=await supabase.from('admin_accounts').select('id').eq('username',email).maybeSingle();
+      if(existing){ setErr("An account with that email already exists."); setLoading(false); return; }
+      const row={
+        name:(f.name.trim()||f.business.trim()), company:f.business.trim(), email,
+        username:email, password_hash:btoa(f.password), role:'admin', status:'pending',
+      };
+      // Try with phone; older databases without the phone column get a retry without it.
+      let {error}=await supabase.from('registrations').insert({...row, phone:f.phone.trim()||null});
+      if(error && /phone/.test(error.message)) ({error}=await supabase.from('registrations').insert(row));
       if(error) throw error;
       setDone(true); addToast?.("Registration submitted.","success");
     }catch(e){ setErr("Failed: "+e.message); }
@@ -658,36 +667,34 @@ function RegisterForm({ onSignIn, onAfterDone, afterDoneLabel="Back to sign in �
     <div className="flex flex-col items-center text-center py-6">
       <div className="w-16 h-16 bg-brand-50 text-brand-600 rounded-2xl flex items-center justify-center mb-5"><Icon name="check" className="w-8 h-8"/></div>
       <h1 className="text-2xl font-black text-ink">Registration submitted</h1>
-      <p className="text-gray-500 text-sm mt-2 max-w-xs">Thanks, {f.name.split(" ")[0]}! An admin will review your request and activate your account.</p>
-      <button onClick={onAfterDone} className="mt-6 bg-brand-500 text-white font-bold px-6 py-3 rounded-2xl hover:bg-brand-600 transition-colors text-sm shadow-brand">{afterDoneLabel}</button>
+      <p className="text-gray-500 text-sm mt-2 max-w-xs">Thanks, {(f.name||f.business).split(" ")[0]}! An admin will review your request and activate your account.</p>
+      <button onClick={onAfterDone} className="mt-6 bg-brand-500 text-white font-bold px-6 py-3 rounded-xl hover:bg-brand-600 transition-colors text-sm shadow-brand">{afterDoneLabel}</button>
     </div>
   );
   return (
     <>
-      <div className="w-12 h-12 bg-brand-50 text-brand-600 rounded-2xl flex items-center justify-center mb-4"><Icon name="userplus" className="w-6 h-6"/></div>
-      <h1 className="text-2xl font-black text-ink">Create your account</h1>
-      <p className="text-gray-500 text-sm mt-1 mb-6">It only takes a minute.</p>
+      <h1 className="text-2xl font-black text-ink">Start your free trial</h1>
+      <span className="inline-block bg-brand-50 text-brand-700 border border-brand-100 text-xs font-bold px-3 py-1 rounded-lg mt-2 mb-5">Plan: Free Trial</span>
       <div className="space-y-4">
-        {err&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-2xl">⚠ {err}</div>}
-        <div className="grid sm:grid-cols-2 gap-4">
-          <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Full name</label>
-            <input value={f.name} onChange={e=>set("name",e.target.value)} placeholder="Juan Dela Cruz" className="w-full border border-gray-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 bg-gray-50"/></div>
-          <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Company</label>
-            <input value={f.company} onChange={e=>set("company",e.target.value)} placeholder="Optional" className="w-full border border-gray-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 bg-gray-50"/></div>
-        </div>
-        <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Email</label>
-          <input type="email" value={f.email} onChange={e=>set("email",e.target.value)} placeholder="you@company.com" className="w-full border border-gray-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 bg-gray-50"/></div>
-        <div className="grid sm:grid-cols-2 gap-4">
-          <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Username</label>
-            <input value={f.username} onChange={e=>set("username",e.target.value)} placeholder="Choose a username" className="w-full border border-gray-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 bg-gray-50"/></div>
-          <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Password</label>
-            <div className="relative">
-              <input type={show?"text":"password"} value={f.password} onChange={e=>set("password",e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="Min. 6 characters" className="w-full border border-gray-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 bg-gray-50 pr-12"/>
-              <button type="button" onClick={()=>setShow(s=>!s)} className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400">{show?"🙈":"👁"}</button>
-            </div>
+        {err&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-lg">⚠ {err}</div>}
+        <div><label className={labelCls}>Business Name <span className="text-red-500">*</span></label>
+          <input value={f.business} onChange={e=>set("business",e.target.value)} placeholder="e.g. Allen Apparel Co." className={inputCls}/></div>
+        <div><label className={labelCls}>Your Name</label>
+          <input value={f.name} onChange={e=>set("name",e.target.value)} placeholder="e.g. Allen Roldan" className={inputCls}/></div>
+        <div><label className={labelCls}>Email <span className="text-red-500">*</span></label>
+          <input type="email" value={f.email} onChange={e=>set("email",e.target.value)} placeholder="you@business.com" className={inputCls}/></div>
+        <div><label className={labelCls}>Phone</label>
+          <input value={f.phone} onChange={e=>set("phone",e.target.value)} placeholder="09xx-xxx-xxxx" className={inputCls}/></div>
+        <div><label className={labelCls}>Password <span className="text-red-500">*</span></label>
+          <div className="relative">
+            <input type={show?"text":"password"} value={f.password} onChange={e=>set("password",e.target.value)} placeholder="Create a password" className={inputCls+" pr-12"}/>
+            <button type="button" onClick={()=>setShow(s=>!s)} className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400">{show?"🙈":"👁"}</button>
           </div>
         </div>
-        <button onClick={submit} disabled={loading} className="w-full bg-brand-500 text-white font-bold py-3.5 rounded-2xl hover:bg-brand-600 disabled:opacity-60 transition-all active:scale-[0.98] text-sm shadow-brand">{loading?"Submitting…":"Create account →"}</button>
+        <div><label className={labelCls}>Confirm Password <span className="text-red-500">*</span></label>
+          <input type={show?"text":"password"} value={f.confirm} onChange={e=>set("confirm",e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="Re-enter your password" className={inputCls}/></div>
+        <p className="text-xs text-gray-500">This is what you'll use to log into your BilisOps dashboard.</p>
+        <button onClick={submit} disabled={loading} className="w-full bg-brand-500 text-white font-bold py-3.5 rounded-xl hover:bg-brand-600 disabled:opacity-60 transition-all active:scale-[0.98] text-sm shadow-brand">{loading?"Submitting…":"Create account →"}</button>
         <p className="text-center text-xs text-gray-400">Already have an account? <button onClick={onSignIn} className="font-bold text-brand-600 hover:text-brand-700">Sign in</button></p>
       </div>
     </>
@@ -790,7 +797,7 @@ function AdminLogin({ onLogin, onBack, onRegister }) {
     if (!u||!p) { setErr("Please enter your credentials."); return; }
     setLoading(true); setErr("");
     try {
-      const {data,error}=await supabase.from('admin_accounts').select('*').eq('username',u.trim()).eq('is_active',true).maybeSingle();
+      const {data,error}=await supabase.from('admin_accounts').select('*').eq('username',u.trim().toLowerCase()).eq('is_active',true).maybeSingle();
       if (error) throw error;
       if (!data||data.password_hash!==btoa(p)) { setErr("Incorrect username or password."); setLoading(false); return; }
       if (data.must_change_password) { setMustChange(data); setLoading(false); return; } // force password change first
@@ -864,7 +871,7 @@ function AdminLogin({ onLogin, onBack, onRegister }) {
           <div className="space-y-5">
             {err&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-2xl">⚠ {err}</div>}
             <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Username</label>
-              <input value={u} onChange={e=>{setU(e.target.value);setErr("");}} onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="Enter username" className="w-full border border-gray-200 rounded-2xl px-4 py-3.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 bg-gray-50"/></div>
+              <input value={u} onChange={e=>{setU(e.target.value);setErr("");}} onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="Username or email" className="w-full border border-gray-200 rounded-2xl px-4 py-3.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 bg-gray-50"/></div>
             <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Password</label>
               <div className="relative">
                 <input type={show?"text":"password"} value={p} onChange={e=>{setP(e.target.value);setErr("");}} onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="Enter password" className="w-full border border-gray-200 rounded-2xl px-4 py-3.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 bg-gray-50 pr-12"/>

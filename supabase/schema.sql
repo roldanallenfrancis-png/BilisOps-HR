@@ -112,6 +112,7 @@ create table if not exists registrations (
   name          text not null,
   company       text,
   email         text not null,
+  phone         text,
   username      text not null,
   password_hash text not null,
   role          text default 'admin',

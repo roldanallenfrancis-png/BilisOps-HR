@@ -113,6 +113,7 @@ create table if not exists registrations (
   company       text,
   email         text not null,
   phone         text,
+  module        text,                                 -- demo they chose: Attendance | Payroll | Directory | All-in-One
   username      text not null,
   password_hash text not null,
   role          text default 'admin',

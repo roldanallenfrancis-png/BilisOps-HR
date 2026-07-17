@@ -494,15 +494,42 @@ function BrandMark({ className="w-10 h-10 rounded-2xl", inverted=false }) {
 }
 
 function LandingPage({ onSelect }) {
-  const [showRegister,setShowRegister]=useState(false);
+  const [regModule,setRegModule]=useState(null);   // non-null → register popup open, value = chosen module
+  const [showDemo,setShowDemo]=useState(false);     // demo chooser popup
+  const DEMOS=[
+    {key:"Attendance", icon:"clock",     desc:"QR & face check-in, schedules, and live reports."},
+    {key:"Payroll",    icon:"payroll",   desc:"Automated pay runs, computations, and payslips."},
+    {key:"Directory",  icon:"directory", desc:"Employee records, org structure, and documents."},
+    {key:"All-in-One", icon:"dashboard", desc:"The complete BilisOps HR suite in one account."},
+  ];
   return (
     <div className="scene-3d-light relative min-h-screen bg-gradient-to-b from-white via-mist to-brand-50">
+      {/* Demo chooser popup — pick a module, then register for that demo */}
+      {showDemo&&(
+        <div className="!fixed inset-0 bg-slate-900/25 !z-[100] flex items-center justify-center p-4 sm:p-6" onClick={()=>setShowDemo(false)}>
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] overflow-y-auto p-6 sm:p-8" onClick={e=>e.stopPropagation()}>
+            <button onClick={()=>setShowDemo(false)} title="Close" className="absolute top-4 right-4 w-9 h-9 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 flex items-center justify-center text-lg">✕</button>
+            <h1 className="text-2xl font-black text-ink">Choose your demo</h1>
+            <p className="text-gray-500 text-sm mt-1 mb-5">Pick the module you want to try — your trial account starts there.</p>
+            <div className="grid sm:grid-cols-2 gap-3">
+              {DEMOS.map(({key,icon,desc})=>(
+                <button key={key} onClick={()=>{setShowDemo(false);setRegModule(key);}}
+                  className="group text-left border border-gray-200 hover:border-brand-400 rounded-xl p-4 transition-colors">
+                  <div className="w-10 h-10 bg-brand-50 text-brand-600 rounded-lg flex items-center justify-center mb-3 group-hover:bg-brand-500 group-hover:text-white transition-colors"><Icon name={icon} className="w-5 h-5"/></div>
+                  <div className="font-black text-ink text-sm mb-1">{key}</div>
+                  <div className="text-gray-500 text-xs leading-relaxed">{desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       {/* Register popup — sign-ups happen right here on the landing, no redirect */}
-      {showRegister&&(
-        <div className="!fixed inset-0 bg-slate-900/25 !z-[100] flex items-center justify-center p-4 sm:p-6" onClick={()=>setShowRegister(false)}>
+      {regModule&&(
+        <div className="!fixed inset-0 bg-slate-900/25 !z-[100] flex items-center justify-center p-4 sm:p-6" onClick={()=>setRegModule(null)}>
           <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[85vh] overflow-y-auto p-6 sm:p-8" onClick={e=>e.stopPropagation()}>
-            <button onClick={()=>setShowRegister(false)} title="Close" className="sticky top-0 float-right -mt-2 -mr-2 w-9 h-9 rounded-lg bg-white hover:bg-gray-100 text-gray-400 hover:text-gray-600 flex items-center justify-center text-lg z-10">✕</button>
-            <RegisterForm onSignIn={()=>{setShowRegister(false);onSelect("admin-login");}} onAfterDone={()=>setShowRegister(false)} afterDoneLabel="Done"/>
+            <button onClick={()=>setRegModule(null)} title="Close" className="sticky top-0 float-right -mt-2 -mr-2 w-9 h-9 rounded-lg bg-white hover:bg-gray-100 text-gray-400 hover:text-gray-600 flex items-center justify-center text-lg z-10">✕</button>
+            <RegisterForm module={regModule} onSignIn={()=>{setRegModule(null);onSelect("admin-login");}} onAfterDone={()=>setRegModule(null)} afterDoneLabel="Done"/>
           </div>
         </div>
       )}
@@ -520,7 +547,7 @@ function LandingPage({ onSelect }) {
           <div className="flex items-center gap-2">
             <button onClick={()=>{const el=document.getElementById('offer'); if(el) window.scrollTo({top: el.getBoundingClientRect().top + window.scrollY - 96, behavior:'smooth'});}} className="hidden sm:inline-flex text-sm font-bold text-gray-600 hover:text-brand-700 px-4 py-2.5 transition-colors">Solutions</button>
             <button onClick={()=>onSelect("admin-login")} className="text-sm font-bold text-gray-600 hover:text-brand-700 px-4 py-2.5 transition-colors">Sign in</button>
-            <button onClick={()=>setShowRegister(true)} className="flex items-center gap-2 bg-brand-500 text-white text-sm font-bold px-5 py-2.5 rounded-full hover:bg-brand-600 transition-colors shadow-brand">Register <span>→</span></button>
+            <button onClick={()=>setRegModule("All-in-One")} className="flex items-center gap-2 bg-brand-500 text-white text-sm font-bold px-5 py-2.5 rounded-full hover:bg-brand-600 transition-colors shadow-brand">Register <span>→</span></button>
           </div>
         </div>
       </header>
@@ -539,8 +566,8 @@ function LandingPage({ onSelect }) {
           BilisOps builds HRIS and custom HR tools — payroll, attendance, and everything your team runs on. One platform, tailored to how you work.
         </p>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mt-8">
-          <button onClick={()=>setShowRegister(true)} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-brand-500 text-white text-sm font-bold px-7 py-3.5 rounded-full hover:bg-brand-600 transition-colors shadow-brand"><Icon name="userplus" className="w-5 h-5"/> Get started free</button>
-          <button onClick={()=>onSelect("admin-login")} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-white text-ink text-sm font-bold px-7 py-3.5 rounded-full border border-gray-200 hover:border-brand-300 transition-colors shadow-sm"><Icon name="dashboard" className="w-5 h-5"/> See the demo</button>
+          <button onClick={()=>setRegModule("All-in-One")} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-brand-500 text-white text-sm font-bold px-7 py-3.5 rounded-full hover:bg-brand-600 transition-colors shadow-brand"><Icon name="userplus" className="w-5 h-5"/> Get started free</button>
+          <button onClick={()=>setShowDemo(true)} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-white text-ink text-sm font-bold px-7 py-3.5 rounded-full border border-gray-200 hover:border-brand-300 transition-colors shadow-sm"><Icon name="dashboard" className="w-5 h-5"/> See the demo</button>
         </div>
       </section>
 
@@ -635,7 +662,7 @@ function LandingPage({ onSelect }) {
 // ════════════════════════════════════════════════════════════════════════════
 // The form itself — reused by the standalone RegisterPage AND the landing's popup.
 // Styled like the BilisOps trial form: single column, plain labels, email = login.
-function RegisterForm({ onSignIn, onAfterDone, afterDoneLabel="Back to sign in →", addToast }) {
+function RegisterForm({ onSignIn, onAfterDone, afterDoneLabel="Back to sign in →", addToast, module="All-in-One" }) {
   const [f,setF]=useState({business:"",name:"",email:"",phone:"",password:"",confirm:""});
   const [show,setShow]=useState(false); const [err,setErr]=useState(""); const [loading,setLoading]=useState(false); const [done,setDone]=useState(false);
   const set=(k,v)=>{ setF(p=>({...p,[k]:v})); setErr(""); };
@@ -655,9 +682,9 @@ function RegisterForm({ onSignIn, onAfterDone, afterDoneLabel="Back to sign in �
         name:(f.name.trim()||f.business.trim()), company:f.business.trim(), email,
         username:email, password_hash:btoa(f.password), role:'admin', status:'pending',
       };
-      // Try with phone; older databases without the phone column get a retry without it.
-      let {error}=await supabase.from('registrations').insert({...row, phone:f.phone.trim()||null});
-      if(error && /phone/.test(error.message)) ({error}=await supabase.from('registrations').insert(row));
+      // Try with phone + chosen module; older databases without those columns get a retry without them.
+      let {error}=await supabase.from('registrations').insert({...row, phone:f.phone.trim()||null, module});
+      if(error && /phone|module/.test(error.message)) ({error}=await supabase.from('registrations').insert(row));
       if(error) throw error;
       setDone(true); addToast?.("Registration submitted.","success");
     }catch(e){ setErr("Failed: "+e.message); }
@@ -674,7 +701,7 @@ function RegisterForm({ onSignIn, onAfterDone, afterDoneLabel="Back to sign in �
   return (
     <>
       <h1 className="text-2xl font-black text-ink">Start your free trial</h1>
-      <span className="inline-block bg-brand-50 text-brand-700 border border-brand-100 text-xs font-bold px-3 py-1 rounded-lg mt-2 mb-5">Plan: Free Trial</span>
+      <span className="inline-block bg-brand-50 text-brand-700 border border-brand-100 text-xs font-bold px-3 py-1 rounded-lg mt-2 mb-5">Plan: Free Trial · {module}</span>
       <div className="space-y-4">
         {err&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-lg">⚠ {err}</div>}
         <div><label className={labelCls}>Business Name <span className="text-red-500">*</span></label>
@@ -2751,17 +2778,18 @@ function AdminRegistrations({ adminUser, addToast }) {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr className="border-b border-gray-100 bg-gray-50/60">
-              {["Name","Company","Email","Username","Submitted","Status","Actions"].map(h=><th key={h} className="text-left text-xs font-semibold text-gray-400 uppercase tracking-wider px-5 py-3">{h}</th>)}
+              {["Name","Company","Email","Demo","Phone","Submitted","Status","Actions"].map(h=><th key={h} className="text-left text-xs font-semibold text-gray-400 uppercase tracking-wider px-5 py-3">{h}</th>)}
             </tr></thead>
             <tbody className="divide-y divide-gray-50">
-              {loading?<tr><td colSpan={7} className="text-center py-12 text-gray-400 text-sm">Loading…</td></tr>
-               :visible.length===0?<tr><td colSpan={7} className="text-center py-12 text-gray-400 text-sm">No {filter==="all"?"":filter} registrations.</td></tr>
+              {loading?<tr><td colSpan={8} className="text-center py-12 text-gray-400 text-sm">Loading…</td></tr>
+               :visible.length===0?<tr><td colSpan={8} className="text-center py-12 text-gray-400 text-sm">No {filter==="all"?"":filter} registrations.</td></tr>
                :visible.map(r=>(
                 <tr key={r.id} className="hover:bg-gray-50/60">
                   <td className="px-5 py-3.5"><div className="font-semibold text-gray-800">{r.name}</div></td>
                   <td className="px-5 py-3.5 text-gray-600">{r.company||"—"}</td>
                   <td className="px-5 py-3.5 text-gray-600">{r.email}</td>
-                  <td className="px-5 py-3.5 font-mono text-xs text-gray-600">{r.username}</td>
+                  <td className="px-5 py-3.5">{r.module?<span className="text-xs font-bold px-2.5 py-1 rounded-full bg-brand-50 text-brand-700 border border-brand-100">{r.module}</span>:<span className="text-gray-300">—</span>}</td>
+                  <td className="px-5 py-3.5 text-xs text-gray-600 whitespace-nowrap">{r.phone||"—"}</td>
                   <td className="px-5 py-3.5 text-xs text-gray-500 whitespace-nowrap">{r.created_at?new Date(r.created_at).toLocaleDateString("en-PH",{month:"short",day:"numeric",year:"numeric"}):"—"}</td>
                   <td className="px-5 py-3.5"><span className={`text-xs font-bold px-2.5 py-1 rounded-full border capitalize ${badge(r.status)}`}>{r.status}</span></td>
                   <td className="px-5 py-3.5">

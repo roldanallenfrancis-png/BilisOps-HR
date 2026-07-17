@@ -499,9 +499,9 @@ function LandingPage({ onSelect }) {
     <div className="scene-3d-light relative min-h-screen bg-gradient-to-b from-white via-mist to-brand-50">
       {/* Register popup — sign-ups happen right here on the landing, no redirect */}
       {showRegister&&(
-        <div className="fixed inset-0 bg-slate-900/20 z-50 flex items-center justify-center p-4" onClick={()=>setShowRegister(false)}>
-          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[92vh] overflow-y-auto p-6 sm:p-8 rise" onClick={e=>e.stopPropagation()}>
-            <button onClick={()=>setShowRegister(false)} title="Close" className="absolute top-4 right-4 w-9 h-9 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 flex items-center justify-center text-lg">✕</button>
+        <div className="!fixed inset-0 bg-slate-900/25 !z-[100] flex items-center justify-center p-4 sm:p-6" onClick={()=>setShowRegister(false)}>
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[85vh] overflow-y-auto p-6 sm:p-8" onClick={e=>e.stopPropagation()}>
+            <button onClick={()=>setShowRegister(false)} title="Close" className="sticky top-0 float-right -mt-2 -mr-2 w-9 h-9 rounded-lg bg-white hover:bg-gray-100 text-gray-400 hover:text-gray-600 flex items-center justify-center text-lg z-10">✕</button>
             <RegisterForm onSignIn={()=>{setShowRegister(false);onSelect("admin-login");}} onAfterDone={()=>setShowRegister(false)} afterDoneLabel="Done"/>
           </div>
         </div>

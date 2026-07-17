@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, Component } from "react";
-import { supabase } from './supabase.js';
+import { supabase, setTenant } from './supabase.js';
 import { FaceEnroll } from './FaceEnroll.jsx';
 import { loadFaceModels, detectFace, buildMatcher, MATCH_THRESHOLD } from './face.js';
 
@@ -829,7 +829,7 @@ function AdminLogin({ onLogin, onBack, onRegister }) {
       if (!data||data.password_hash!==btoa(p)) { setErr("Incorrect username or password."); setLoading(false); return; }
       if (data.must_change_password) { setMustChange(data); setLoading(false); return; } // force password change first
       await supabase.from('admin_accounts').update({last_login:new Date().toISOString()}).eq('id',data.id);
-      const user={id:data.id,username:data.username,role:data.role,departmentAccess:data.department_access||null,loginTime:new Date().toLocaleTimeString("en-PH")};
+      const user={id:data.id,username:data.username,role:data.role,departmentAccess:data.department_access||null,tenantId:data.tenant_id||null,loginTime:new Date().toLocaleTimeString("en-PH")};
       onLogin(user);
     } catch(e) { setErr("Login failed: "+e.message); setLoading(false); }
   };
@@ -841,7 +841,7 @@ function AdminLogin({ onLogin, onBack, onRegister }) {
     setLoading(true); setErr("");
     try {
       await supabase.from('admin_accounts').update({password_hash:btoa(np),must_change_password:false,last_login:new Date().toISOString()}).eq('id',mustChange.id);
-      const user={id:mustChange.id,username:mustChange.username,role:mustChange.role,departmentAccess:mustChange.department_access||null,loginTime:new Date().toLocaleTimeString("en-PH")};
+      const user={id:mustChange.id,username:mustChange.username,role:mustChange.role,departmentAccess:mustChange.department_access||null,tenantId:mustChange.tenant_id||null,loginTime:new Date().toLocaleTimeString("en-PH")};
       onLogin(user);
     } catch(e) { setErr("Failed: "+e.message); setLoading(false); }
   };
@@ -2749,10 +2749,16 @@ function AdminRegistrations({ adminUser, addToast }) {
     // Make sure the username is still free, then create the login account.
     const {data:existing}=await supabase.from('admin_accounts').select('id').eq('username',r.username).maybeSingle();
     if(existing){ addToast("Username already taken — edit before approving.","error"); setBusy(null); return; }
-    const {error}=await supabase.from('admin_accounts').insert({username:r.username,password_hash:r.password_hash,role:r.role||'admin',department_access:null,is_active:true,must_change_password:false});
+    // The registration id becomes the business's TENANT ID — every row of their
+    // data carries it, keeping each customer's data separate and identifiable.
+    const acct={username:r.username,password_hash:r.password_hash,role:r.role||'admin',department_access:null,is_active:true,must_change_password:false};
+    let {error}=await supabase.from('admin_accounts').insert({...acct, tenant_id:r.id});
+    if(error && /tenant_id/.test(error.message)) ({error}=await supabase.from('admin_accounts').insert(acct));
     if(error){ addToast("Failed: "+error.message,"error"); setBusy(null); return; }
-    await supabase.from('registrations').update({status:'approved',reviewed_by:adminUser.username,reviewed_at:new Date().toISOString()}).eq('id',r.id);
-    setBusy(null); addToast(`${r.name} approved — account "${r.username}" created.`,"success"); load();
+    const rev={status:'approved',reviewed_by:adminUser.username,reviewed_at:new Date().toISOString()};
+    let {error:e2}=await supabase.from('registrations').update({...rev, tenant_id:r.id}).eq('id',r.id);
+    if(e2 && /tenant_id/.test(e2.message)) await supabase.from('registrations').update(rev).eq('id',r.id);
+    setBusy(null); addToast(`${r.name} approved — tenant created for "${r.username}".`,"success"); load();
   };
   const reject=async r=>{ setBusy(r.id); await supabase.from('registrations').update({status:'rejected',reviewed_by:adminUser.username,reviewed_at:new Date().toISOString()}).eq('id',r.id); setBusy(null); addToast(`${r.name}'s registration rejected.`,"info"); load(); };
   const doDelete=async()=>{ await supabase.from('registrations').delete().eq('id',confirmDel.id); setConfirmDel(null); addToast("Registration deleted.","info"); load(); };
@@ -2785,7 +2791,7 @@ function AdminRegistrations({ adminUser, addToast }) {
                :visible.length===0?<tr><td colSpan={8} className="text-center py-12 text-gray-400 text-sm">No {filter==="all"?"":filter} registrations.</td></tr>
                :visible.map(r=>(
                 <tr key={r.id} className="hover:bg-gray-50/60">
-                  <td className="px-5 py-3.5"><div className="font-semibold text-gray-800">{r.name}</div></td>
+                  <td className="px-5 py-3.5"><div className="font-semibold text-gray-800">{r.name}</div>{r.tenant_id&&<div className="text-[10px] font-mono text-gray-400" title={`Tenant ID: ${r.tenant_id}`}>tenant {String(r.tenant_id).slice(0,8)}</div>}</td>
                   <td className="px-5 py-3.5 text-gray-600">{r.company||"—"}</td>
                   <td className="px-5 py-3.5 text-gray-600">{r.email}</td>
                   <td className="px-5 py-3.5">{r.module?<span className="text-xs font-bold px-2.5 py-1 rounded-full bg-brand-50 text-brand-700 border border-brand-100">{r.module}</span>:<span className="text-gray-300">—</span>}</td>
@@ -2831,7 +2837,7 @@ function AdminAccounts({ adminUser, addToast, allDepartments }) {
   const [showPw,setShowPw]=useState({}); const [confirmDel,setConfirmDel]=useState(null);
   const isSuperAdmin=adminUser.role==="super_admin";
 
-  const load=async()=>{ setLoading(true); const{data}=await supabase.from('admin_accounts').select('id,username,role,is_active,last_login,created_at,department_access').order('created_at'); setAccounts(data||[]); setLoading(false); };
+  const load=async()=>{ setLoading(true); let {data,error}=await supabase.from('admin_accounts').select('id,username,role,is_active,last_login,created_at,department_access,tenant_id').order('created_at'); if(error) ({data}=await supabase.from('admin_accounts').select('id,username,role,is_active,last_login,created_at,department_access').order('created_at')); setAccounts(data||[]); setLoading(false); };
   useEffect(()=>{ load(); },[]);
 
   const toggleDept=d=>setForm(f=>({...f,department_access:f.department_access.includes(d)?f.department_access.filter(x=>x!==d):[...f.department_access,d]}));
@@ -2906,7 +2912,7 @@ function AdminAccounts({ adminUser, addToast, allDepartments }) {
             <tbody className="divide-y divide-gray-50">
               {accounts.map(acc=>(
                 <tr key={acc.id} className={`hover:bg-gray-50/60 transition-colors ${acc.id===adminUser.id?"bg-brand-50/30":""}`}>
-                  <td className="px-5 py-4"><div className="font-semibold text-gray-800">{acc.username}</div>{acc.id===adminUser.id&&<div className="text-xs text-brand-500 font-semibold">← You</div>}</td>
+                  <td className="px-5 py-4"><div className="font-semibold text-gray-800">{acc.username}</div>{acc.tenant_id&&<div className="text-[10px] font-mono text-gray-400" title={`Tenant ID: ${acc.tenant_id}`}>tenant {String(acc.tenant_id).slice(0,8)}</div>}{acc.id===adminUser.id&&<div className="text-xs text-brand-500 font-semibold">← You</div>}</td>
                   <td className="px-5 py-4"><span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200 capitalize">{acc.role.replace("_"," ")}</span></td>
                   <td className="px-5 py-4 text-xs text-gray-500">{acc.role==="super_admin"?"All":acc.department_access?.length>0?acc.department_access.join(", "):"All"}</td>
                   <td className="px-5 py-4"><span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border ${acc.is_active?"bg-emerald-50 text-emerald-700 border-emerald-200":"bg-gray-100 text-gray-500 border-gray-200"}`}>{acc.is_active?"Active":"Inactive"}</span></td>
@@ -3859,6 +3865,8 @@ function AppInner() {
   // ── Restore session on load so reload does NOT log you out ────────────────
   const savedUser = loadSession();
   const savedKiosk = loadKioskSession();
+  // Scope all data queries to the signed-in tenant BEFORE the first load runs.
+  setTenant((savedUser||savedKiosk)?.tenantId||null);
   const [screen,        setScreen]    = useState(
     COMBINED     ? (savedKiosk ? "kiosk-choose" : "kiosk-login") :
     KIOSK_ONLY   ? KIOSK_HOME :
@@ -4002,10 +4010,10 @@ function AppInner() {
   },[addToast]);
 
   // ── Auth — persist session ────────────────────────────────────────────────
-  const handleLogin=user=>{ saveSession(user); setAdminUser(user); setScreen("admin"); };
-  const handleLogout=()=>{ clearSession(); setAdminUser(null); setScreen("landing"); addToast("Signed out.","info"); };
-  const handleKioskLogin=user=>{ saveKioskSession(user); setKioskUser(user); if (COMBINED) setScreen("kiosk-choose"); };
-  const handleKioskLogout=()=>{ clearKioskSession(); setKioskUser(null); setScreen(COMBINED ? "kiosk-login" : KIOSK_ONLY ? KIOSK_HOME : "landing"); addToast("Kiosk signed out.","info"); };
+  const handleLogin=user=>{ saveSession(user); setAdminUser(user); setTenant(user.tenantId||null); setScreen("admin"); loadData(); };
+  const handleLogout=()=>{ clearSession(); setAdminUser(null); setTenant(null); setScreen("landing"); addToast("Signed out.","info"); };
+  const handleKioskLogin=user=>{ saveKioskSession(user); setKioskUser(user); setTenant(user.tenantId||null); if (COMBINED) setScreen("kiosk-choose"); loadData(); };
+  const handleKioskLogout=()=>{ clearKioskSession(); setKioskUser(null); setTenant(null); setScreen(COMBINED ? "kiosk-login" : KIOSK_ONLY ? KIOSK_HOME : "landing"); addToast("Kiosk signed out.","info"); };
   // Combined APK → back returns to the kiosk chooser. Dedicated-kiosk builds have no
   // landing to return to, so "back" just re-locks the kiosk.
   const kioskBack = COMBINED ? () => setScreen("kiosk-choose") : KIOSK_ONLY ? handleKioskLogout : () => setScreen("landing");

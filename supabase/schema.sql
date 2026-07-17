@@ -8,7 +8,8 @@
 
 -- ── Employees ────────────────────────────────────────────────────────────────
 create table if not exists employees (
-  id               text primary key,
+  tenant_id        uuid not null default '00000000-0000-0000-0000-000000000000',
+  id               text not null,
   name             text not null,
   position         text,
   department       text,
@@ -21,13 +22,15 @@ create table if not exists employees (
   emp_type         text default 'Regular',
   start_date       date,
   schedule         jsonb,
-  created_at       timestamptz default now()
+  created_at       timestamptz default now(),
+  primary key (tenant_id, id)
 );
 
 -- ── Attendance (one row per employee per day) ────────────────────────────────
 create table if not exists attendance (
   id                 uuid primary key default gen_random_uuid(),
-  employee_id        text not null references employees(id) on delete cascade,
+  tenant_id          uuid not null default '00000000-0000-0000-0000-000000000000',
+  employee_id        text not null,
   date               date not null,
   time_in            time,
   time_out           time,
@@ -49,13 +52,15 @@ create table if not exists attendance (
   time_out_src       text,
   schedule_override  jsonb,
   created_at         timestamptz default now(),
-  unique (employee_id, date)
+  unique (tenant_id, employee_id, date),
+  foreign key (tenant_id, employee_id) references employees(tenant_id, id) on delete cascade
 );
 create index if not exists attendance_date_idx on attendance(date);
 
 -- ── Leaves ───────────────────────────────────────────────────────────────────
 create table if not exists leaves (
   id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid not null default '00000000-0000-0000-0000-000000000000',
   employee_id text not null,
   date_from   date not null,
   date_to     date not null,
@@ -67,13 +72,16 @@ create table if not exists leaves (
 
 -- ── Roles (managed list used by Settings) ────────────────────────────────────
 create table if not exists roles (
-  name       text primary key,
-  created_at timestamptz default now()
+  tenant_id  uuid not null default '00000000-0000-0000-0000-000000000000',
+  name       text not null,
+  created_at timestamptz default now(),
+  primary key (tenant_id, name)
 );
 
 -- ── Notifications (admin bell) ───────────────────────────────────────────────
 create table if not exists notifications (
   id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid not null default '00000000-0000-0000-0000-000000000000',
   type        text,
   title       text,
   message     text,
@@ -86,6 +94,7 @@ create table if not exists notifications (
 -- ── Audit log ────────────────────────────────────────────────────────────────
 create table if not exists audit_log (
   id         uuid primary key default gen_random_uuid(),
+  tenant_id  uuid not null default '00000000-0000-0000-0000-000000000000',
   actor      text,
   action     text,
   target     text,
@@ -102,6 +111,7 @@ create table if not exists admin_accounts (
   department_access    jsonb,                        -- null = all departments
   is_active            boolean default true,
   must_change_password boolean default false,
+  tenant_id            uuid,                          -- the business this login belongs to (null = platform super admin)
   last_login           timestamptz,
   created_at           timestamptz default now()
 );
@@ -118,6 +128,7 @@ create table if not exists registrations (
   password_hash text not null,
   role          text default 'admin',
   status        text default 'pending',              -- pending | approved | rejected
+  tenant_id     uuid,                                 -- set on approval (= this registration's id)
   reviewed_by   text,
   reviewed_at   timestamptz,
   created_at    timestamptz default now()

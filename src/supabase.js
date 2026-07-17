@@ -151,8 +151,47 @@ function makeLocalStub() {
 }
 
 // ── Pick the real client when configured, else the local stub ────────────────
-export const supabase = (SUPA_URL && SUPA_ANON)
+const baseClient = (SUPA_URL && SUPA_ANON)
   ? createClient(SUPA_URL, SUPA_ANON)
   : makeLocalStub();
 
 export const isLiveBackend = !!(SUPA_URL && SUPA_ANON);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MULTI-TENANCY
+// Every approved registration becomes a TENANT (its id = the registration id).
+// All business data rows carry a tenant_id. This wrapper makes that automatic
+// for every query in the app:
+//   • writes  → tenant_id is stamped onto inserted/upserted rows
+//   • reads   → filtered to the signed-in tenant (super admin sees everything)
+//   • upserts → conflict targets are rewritten to include tenant_id
+// Call setTenant(id) after login / setTenant(null) on logout.
+// NOTE: with the anon key this is app-level separation (fine for a pilot);
+// hard isolation needs server-side auth + RLS per tenant.
+// ─────────────────────────────────────────────────────────────────────────────
+const SENTINEL_TENANT = '00000000-0000-0000-0000-000000000000'; // platform-owned rows (super admin)
+const SCOPED_TABLES = ['employees','attendance','leaves','roles','notifications','audit_log'];
+
+let TENANT_ID = null;
+export function setTenant(id) { TENANT_ID = id || null; }
+export function getTenant() { return TENANT_ID; }
+
+export const supabase = {
+  from(table) {
+    const b = baseClient.from(table);
+    if (!SCOPED_TABLES.includes(table)) return b;
+    const tid = TENANT_ID;                       // read filter only when a tenant is active
+    const writeTid = TENANT_ID || SENTINEL_TENANT; // writes are always stamped
+    const stamp = r => Array.isArray(r) ? r.map(x => ({ tenant_id: writeTid, ...x })) : ({ tenant_id: writeTid, ...r });
+    return {
+      select: (...a) => { const q = b.select(...a); return tid ? q.eq('tenant_id', tid) : q; },
+      insert: (rows) => b.insert(stamp(rows)),
+      upsert: (rows, o) => b.upsert(stamp(rows), o?.onConflict ? { ...o, onConflict: 'tenant_id,' + o.onConflict } : o),
+      update: (v) => { const q = b.update(v); return tid ? q.eq('tenant_id', tid) : q; },
+      delete: () => { const q = b.delete(); return tid ? q.eq('tenant_id', tid) : q; },
+    };
+  },
+  channel: (...a) => baseClient.channel(...a),
+  removeChannel: (...a) => baseClient.removeChannel(...a),
+  rpc: (...a) => baseClient.rpc(...a),
+};

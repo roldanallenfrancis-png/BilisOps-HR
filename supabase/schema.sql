@@ -22,6 +22,12 @@ create table if not exists employees (
   emp_type         text default 'Regular',
   start_date       date,
   schedule         jsonb,
+  monthly_rate     numeric default 0,
+  allowance        numeric default 0,
+  sss_no           text,
+  philhealth_no    text,
+  pagibig_no       text,
+  tin_no           text,
   created_at       timestamptz default now(),
   primary key (tenant_id, id)
 );
@@ -64,9 +70,12 @@ create table if not exists leaves (
   employee_id text not null,
   date_from   date not null,
   date_to     date not null,
-  leave_type  text default 'leave',
+  leave_type  text default 'leave',              -- leave | halfday | offset
   reason      text,
   filed_by    text,
+  status      text default 'approved',           -- pending | approved | rejected
+  reviewed_by text,
+  offset_hours numeric,
   created_at  timestamptz default now()
 );
 
@@ -112,6 +121,7 @@ create table if not exists admin_accounts (
   is_active            boolean default true,
   must_change_password boolean default false,
   tenant_id            uuid,                          -- the business this login belongs to (null = platform super admin)
+  employee_id          text,                          -- set for employee portal logins (role = 'employee')
   last_login           timestamptz,
   created_at           timestamptz default now()
 );
@@ -133,6 +143,36 @@ create table if not exists registrations (
   reviewed_at   timestamptz,
   created_at    timestamptz default now()
 );
+
+-- ── Payroll ──────────────────────────────────────────────────────────────────
+create table if not exists payroll_settings (
+  tenant_id  uuid primary key,
+  settings   jsonb not null,
+  updated_at timestamptz default now()
+);
+create table if not exists payroll_runs (
+  id           uuid primary key default gen_random_uuid(),
+  tenant_id    uuid not null default '00000000-0000-0000-0000-000000000000',
+  period_start date not null,
+  period_end   date not null,
+  pay_date     date,
+  status       text default 'draft',        -- draft | final
+  created_by   text,
+  created_at   timestamptz default now()
+);
+create table if not exists payslips (
+  id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid not null default '00000000-0000-0000-0000-000000000000',
+  run_id      uuid references payroll_runs(id) on delete cascade,
+  employee_id text not null,
+  data        jsonb not null,
+  gross       numeric default 0,
+  deductions  numeric default 0,
+  net         numeric default 0,
+  created_at  timestamptz default now()
+);
+create index if not exists payslips_emp_idx on payslips(tenant_id, employee_id);
+create index if not exists payroll_runs_tenant_idx on payroll_runs(tenant_id, period_start);
 
 -- ── RPC: trusted server clock (kiosks sync to this) ──────────────────────────
 create or replace function get_server_time()
@@ -162,7 +202,7 @@ do $$ begin
 do $$
 declare t text;
 begin
-  foreach t in array array['employees','attendance','leaves','roles','notifications','audit_log','admin_accounts','registrations']
+  foreach t in array array['employees','attendance','leaves','roles','notifications','audit_log','admin_accounts','registrations','payroll_settings','payroll_runs','payslips']
   loop
     execute format('alter table %I enable row level security', t);
     execute format('drop policy if exists "anon full access" on %I', t);

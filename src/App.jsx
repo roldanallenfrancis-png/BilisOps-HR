@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, Component } from "react";
 import { supabase, setTenant } from './supabase.js';
+import { PH_PAYROLL_DEFAULTS, mergeSettings, computePayslip, computeSSS, computePhilHealth, computePagibig, peso } from './payroll.js';
 import { FaceEnroll } from './FaceEnroll.jsx';
 import { loadFaceModels, detectFace, buildMatcher, MATCH_THRESHOLD } from './face.js';
 
@@ -216,7 +217,8 @@ function liveOverBreakMinutes(emp, rec) { return liveBreakOver(emp, rec).total; 
 // Half Day apart from a regular leave instead of everything collapsing into "On Leave".
 function isOnLeave(leaves, empId, dateStr) {
   if (!Array.isArray(leaves)) return false;
-  const l = leaves.find(l => l.employee_id===empId && String(l.date_from).slice(0,10) <= dateStr && dateStr <= String(l.date_to).slice(0,10));
+  // Only APPROVED leaves count toward attendance (pending/rejected requests don't).
+  const l = leaves.find(l => l.employee_id===empId && (l.status??'approved')==='approved' && String(l.date_from).slice(0,10) <= dateStr && dateStr <= String(l.date_to).slice(0,10));
   return l ? (l.leave_type||"leave") : false;
 }
 
@@ -285,7 +287,8 @@ function rowToEmp(row) {
     lunchBreak:    numOr(s.lunchBreak,    DEFAULT_SCHEDULE.lunchBreak),
     restDays:      Array.isArray(s.restDays) ? s.restDays : DEFAULT_SCHEDULE.restDays,
   };
-  return { id:row.id, name:row.name, position:row.position, department:row.department, role:row.role||'Staff', contact:row.contact||'', qrCode:row.qr_code||'', rfidUid:row.rfid_uid||'', faceDescriptors:Array.isArray(row.face_descriptors)?row.face_descriptors:[], status:row.status, empType:row.emp_type||'Regular', createdAt:row.created_at?String(row.created_at).slice(0,10):null, startDate:row.start_date?String(row.start_date).slice(0,10):null, schedule };
+  return { id:row.id, name:row.name, position:row.position, department:row.department, role:row.role||'Staff', contact:row.contact||'', qrCode:row.qr_code||'', rfidUid:row.rfid_uid||'', faceDescriptors:Array.isArray(row.face_descriptors)?row.face_descriptors:[], status:row.status, empType:row.emp_type||'Regular', createdAt:row.created_at?String(row.created_at).slice(0,10):null, startDate:row.start_date?String(row.start_date).slice(0,10):null, schedule,
+    monthlyRate:Number(row.monthly_rate)||0, allowance:Number(row.allowance)||0, sssNo:row.sss_no||'', philhealthNo:row.philhealth_no||'', pagibigNo:row.pagibig_no||'', tinNo:row.tin_no||'' };
 }
 function rowToAttRec(row) {
   return {
@@ -483,6 +486,16 @@ function Icon({ name, className="w-5 h-5" }) {
   };
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>{paths[name]||null}</svg>;
 }
+
+// ── Module entitlements ──────────────────────────────────────────────────────
+// Which parts of the suite a tenant can use, from the demo/plan they registered
+// for. null/undefined modules = everything (super admin, legacy accounts).
+const ALL_MODULES = ['attendance','payroll','directory'];
+const modulesOf = m =>
+  m === 'Attendance' ? ['attendance'] :
+  m === 'Payroll'    ? ['payroll']    :
+  m === 'Directory'  ? ['directory']  : ALL_MODULES;
+const hasMod = (user, m) => !user?.modules || user.modules.includes(m);
 
 // Brand mark — green rounded square with a white lightning bolt (inverted = white tile, green bolt).
 function BrandMark({ className="w-10 h-10 rounded-2xl", inverted=false }) {
@@ -763,6 +776,195 @@ function RegisterPage({ onBack, onDone, addToast }) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// EMPLOYEE PORTAL — self-service for employees: own attendance, file leave or
+// offset requests, view & print payslips.
+// ════════════════════════════════════════════════════════════════════════════
+function EmployeePortal({ account, onLogout, addToast }) {
+  const [tab,setTab]=useState("attendance"); // attendance | leave | payslips
+  const [emp,setEmp]=useState(null); const [rows,setRows]=useState([]); const [myLeaves,setMyLeaves]=useState([]);
+  const [slips,setSlips]=useState([]); const [runsById,setRunsById]=useState({});
+  const [slipModal,setSlipModal]=useState(null); const [loading,setLoading]=useState(true);
+  const [lv,setLv]=useState({date_from:getToday(),date_to:getToday(),leave_type:"leave",offset_hours:"",reason:""});
+  const [filing,setFiling]=useState(false);
+  const TODAY=getToday();
+
+  const load=useCallback(async()=>{
+    setLoading(true);
+    const eid=account.employeeId;
+    const [{data:e},{data:att},{data:lvs},{data:ps},{data:rns}]=await Promise.all([
+      supabase.from('employees').select('*').eq('id',eid).maybeSingle(),
+      supabase.from('attendance').select('*').eq('employee_id',eid).order('date',{ascending:false}).limit(45),
+      supabase.from('leaves').select('*').eq('employee_id',eid).order('created_at',{ascending:false}).limit(30),
+      supabase.from('payslips').select('*').eq('employee_id',eid).order('created_at',{ascending:false}).limit(24),
+      supabase.from('payroll_runs').select('*'),
+    ]);
+    setEmp(e?rowToEmp(e):null);
+    setRows((att||[]).map(rowToAttRec));
+    setMyLeaves(lvs||[]);
+    const rb=Object.fromEntries((rns||[]).map(r=>[r.id,r]));
+    setRunsById(rb);
+    setSlips((ps||[]).filter(s=>rb[s.run_id]?.status==='final'));
+    setLoading(false);
+  },[account.employeeId]);
+  useEffect(()=>{ load(); },[load]);
+
+  const fileLeave=async()=>{
+    if(!lv.date_from||!lv.date_to){ addToast("Pick the dates.","error"); return; }
+    if(lv.date_to<lv.date_from){ addToast("End date can't be before start date.","error"); return; }
+    if(lv.leave_type==="offset"&&!(Number(lv.offset_hours)>0)){ addToast("Enter the offset hours.","error"); return; }
+    setFiling(true);
+    const {error}=await supabase.from('leaves').insert({
+      employee_id:account.employeeId, date_from:lv.date_from, date_to:lv.date_to,
+      leave_type:lv.leave_type, reason:lv.reason||null, filed_by:account.username,
+      status:'pending', offset_hours:lv.leave_type==="offset"?Number(lv.offset_hours):null,
+    });
+    if(!error) await supabase.from('notifications').insert({type:'leave-request',title:`${lv.leave_type==="offset"?"Offset":"Leave"} request — ${emp?.name||account.username}`,message:`${emp?.name||account.username} filed ${lv.leave_type} for ${lv.date_from}${lv.date_to!==lv.date_from?" → "+lv.date_to:""}. Review it in Leave.`,employee_id:account.employeeId,department:emp?.department||null});
+    setFiling(false);
+    if(error){ addToast("Failed: "+error.message,"error"); return; }
+    addToast("Request submitted — your admin will review it.","success");
+    setLv({date_from:TODAY,date_to:TODAY,leave_type:"leave",offset_hours:"",reason:""});
+    load();
+  };
+
+  const periodLabel=s=>{ const r=runsById[s.run_id]; return r?`${fmtDate(r.period_start)} – ${fmtDate(r.period_end)}`:fmtDate(String(s.created_at).slice(0,10)); };
+  const stBadge=s=>s==='approved'?"bg-brand-50 text-brand-700 border-brand-200":s==='rejected'?"bg-red-50 text-red-700 border-red-200":"bg-amber-50 text-amber-700 border-amber-200";
+  const todayRec=rows.find(r=>r.date===TODAY);
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-mist via-white to-brand-50/40 flex flex-col">
+      <header className="bg-white/85 backdrop-blur border-b border-gray-100 sticky top-0 z-20">
+        <div className="max-w-3xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <BrandMark className="w-9 h-9 rounded-xl"/>
+            <div className="leading-tight"><div className="font-black text-sm text-ink">BilisOps</div><div className="text-[10px] font-bold text-brand-600 -mt-0.5">My Portal</div></div>
+          </div>
+          <button onClick={onLogout} className="flex items-center gap-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 text-xs font-bold px-3 py-2 rounded-xl transition-colors"><Icon name="logout" className="w-4 h-4"/> Sign out</button>
+        </div>
+      </header>
+      <main className="flex-1 w-full max-w-3xl mx-auto px-4 sm:px-6 py-6">
+        {loading?<div className="text-center py-20 text-gray-400 text-sm">Loading your portal…</div>:<>
+        {/* Greeting card */}
+        <div className="bg-gradient-to-br from-brand-500 to-brand-700 rounded-3xl p-6 text-white shadow-brand mb-5">
+          <div className="text-xs font-bold text-white/70 uppercase tracking-wider">Welcome back</div>
+          <div className="text-2xl font-black mt-0.5">{emp?.name||account.username}</div>
+          <div className="text-white/70 text-sm">{emp?.position||""}{emp?.department?` · ${emp.department}`:""}</div>
+          <div className="mt-3 inline-flex items-center gap-2 bg-white/15 rounded-full px-3 py-1.5 text-xs font-bold">
+            {todayRec?.timeIn?`Today: in ${fmt(todayRec.timeIn)}${todayRec.timeOut?` · out ${fmt(todayRec.timeOut)}`:" · still in"}`:"No scan yet today"}
+          </div>
+        </div>
+        {/* Tabs */}
+        <div className="flex gap-2 mb-5">
+          {[["attendance","My Attendance","clock"],["leave","Leave & Offset","leaves"],["payslips","Payslips","payroll"]].map(([k,l,ic])=>(
+            <button key={k} onClick={()=>setTab(k)} className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-xs font-bold border transition-colors ${tab===k?"bg-brand-500 text-white border-brand-500 shadow-brand":"bg-white text-gray-600 border-gray-200 hover:border-brand-300"}`}><Icon name={ic} className="w-4 h-4"/> {l}</button>
+          ))}
+        </div>
+
+        {tab==="attendance"&&(
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-gray-100 font-bold text-gray-800 text-sm">Last 45 days</div>
+            <div className="overflow-x-auto"><table className="w-full text-sm">
+              <thead><tr className="border-b border-gray-100 bg-gray-50/60">{["Date","In","Out","Late","Hours"].map(h=><th key={h} className="text-left text-xs font-semibold text-gray-400 uppercase tracking-wider px-4 py-2.5">{h}</th>)}</tr></thead>
+              <tbody className="divide-y divide-gray-50">
+                {rows.length===0?<tr><td colSpan={5} className="text-center py-10 text-gray-400 text-sm">No attendance yet.</td></tr>
+                 :rows.map(r=>(
+                  <tr key={r.date}>
+                    <td className="px-4 py-2.5 text-xs font-semibold text-gray-700 whitespace-nowrap">{fmtDate(r.date)}</td>
+                    <td className="px-4 py-2.5 font-mono text-xs">{r.timeIn?fmt(r.timeIn):"—"}</td>
+                    <td className="px-4 py-2.5 font-mono text-xs">{r.timeOut?fmt(r.timeOut):"—"}</td>
+                    <td className="px-4 py-2.5 text-xs">{r.lateMinutes>0?<span className="text-amber-600 font-bold">{r.lateMinutes}m</span>:<span className="text-gray-300">—</span>}</td>
+                    <td className="px-4 py-2.5 text-xs font-mono">{r.hoursWorked||"—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table></div>
+          </div>
+        )}
+
+        {tab==="leave"&&(
+          <div className="space-y-5">
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+              <h2 className="font-bold text-gray-800 text-sm mb-3">File a request</h2>
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="text-xs font-bold text-gray-500 uppercase block mb-1">Type</label>
+                  <select value={lv.leave_type} onChange={e=>setLv(p=>({...p,leave_type:e.target.value}))} className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm">
+                    <option value="leave">Leave (whole day)</option><option value="halfday">Half day</option><option value="offset">Offset (use OT hours)</option>
+                  </select></div>
+                {lv.leave_type==="offset"?(
+                  <div><label className="text-xs font-bold text-gray-500 uppercase block mb-1">Offset hours</label>
+                    <input type="number" min="1" value={lv.offset_hours} onChange={e=>setLv(p=>({...p,offset_hours:e.target.value}))} placeholder="e.g. 4" className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm"/></div>
+                ):<div/>}
+                <div><label className="text-xs font-bold text-gray-500 uppercase block mb-1">From</label>
+                  <input type="date" value={lv.date_from} onChange={e=>setLv(p=>({...p,date_from:e.target.value}))} className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm"/></div>
+                <div><label className="text-xs font-bold text-gray-500 uppercase block mb-1">To</label>
+                  <input type="date" value={lv.date_to} onChange={e=>setLv(p=>({...p,date_to:e.target.value}))} className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm"/></div>
+              </div>
+              <div className="mt-3"><label className="text-xs font-bold text-gray-500 uppercase block mb-1">Reason</label>
+                <textarea value={lv.reason} onChange={e=>setLv(p=>({...p,reason:e.target.value}))} rows={2} placeholder={lv.leave_type==="offset"?"Which OT are you offsetting? (e.g. OT last Saturday)":"Short reason"} className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm"/></div>
+              <button disabled={filing} onClick={fileLeave} className="mt-3 w-full bg-brand-500 text-white text-sm font-bold py-3 rounded-xl hover:bg-brand-600 disabled:opacity-50 shadow-brand">{filing?"Submitting…":"Submit request"}</button>
+            </div>
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+              <div className="px-5 py-3.5 border-b border-gray-100 font-bold text-gray-800 text-sm">My requests</div>
+              <div className="divide-y divide-gray-50">
+                {myLeaves.length===0?<div className="text-center py-10 text-gray-400 text-sm">Nothing filed yet.</div>
+                 :myLeaves.map(l=>(
+                  <div key={l.id} className="px-5 py-3 flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-gray-800 capitalize">{l.leave_type}{l.offset_hours?` · ${l.offset_hours}h`:""}</div>
+                      <div className="text-xs text-gray-400">{fmtDate(l.date_from)}{l.date_to!==l.date_from?` → ${fmtDate(l.date_to)}`:""}{l.reason?` · ${l.reason}`:""}</div>
+                    </div>
+                    <span className={`text-xs font-bold px-2.5 py-1 rounded-full border capitalize shrink-0 ${stBadge(l.status??'approved')}`}>{l.status??'approved'}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab==="payslips"&&(
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-gray-100 font-bold text-gray-800 text-sm">My payslips</div>
+            <div className="divide-y divide-gray-50">
+              {slips.length===0?<div className="text-center py-10 text-gray-400 text-sm">No payslips yet — they appear here when payroll is finalized.</div>
+               :slips.map(s=>(
+                <div key={s.id} className="px-5 py-3.5 flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-gray-800">{periodLabel(s)}</div>
+                    <div className="text-xs text-gray-400">Net pay: <span className="font-mono font-bold text-brand-700">{peso(s.net)}</span></div>
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                    <button onClick={()=>setSlipModal(s)} className="text-xs font-bold px-3 py-2 rounded-xl bg-gray-100 text-gray-700 hover:bg-gray-200">View</button>
+                    <button onClick={()=>printPayslip(s, emp, "", periodLabel(s))} className="text-xs font-bold px-3 py-2 rounded-xl bg-brand-500 text-white hover:bg-brand-600">🖨 Print</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        </>}
+      </main>
+
+      {slipModal&&(
+        <div className="fixed inset-0 bg-slate-900/25 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={()=>setSlipModal(null)}>
+          <div className="bg-white rounded-3xl w-full max-w-md max-h-[85vh] overflow-y-auto shadow-2xl p-7" onClick={e=>e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-1">
+              <h2 className="font-black text-ink">Payslip</h2>
+              <button onClick={()=>setSlipModal(null)} className="w-9 h-9 rounded-lg hover:bg-gray-100 text-gray-400">✕</button>
+            </div>
+            <div className="text-xs text-gray-400 mb-4">{periodLabel(slipModal)}</div>
+            <div className="text-xs font-bold text-brand-700 uppercase tracking-wider mb-1">Earnings</div>
+            {slipModal.data.earnings.map((e,i)=><div key={i} className="flex justify-between text-sm py-1 border-b border-gray-50"><span className="text-gray-600">{e.label}</span><span className="font-mono">{peso(e.amount)}</span></div>)}
+            <div className="text-xs font-bold text-red-600 uppercase tracking-wider mt-3 mb-1">Deductions</div>
+            {slipModal.data.deductions.map((d,i)=><div key={i} className="flex justify-between text-sm py-1 border-b border-gray-50"><span className="text-gray-600">{d.label}</span><span className="font-mono">−{peso(d.amount)}</span></div>)}
+            <div className="mt-4 bg-brand-50 border border-brand-200 rounded-2xl px-4 py-3 flex justify-between font-black text-brand-800"><span>NET PAY</span><span className="font-mono">{peso(slipModal.net)}</span></div>
+            <button onClick={()=>printPayslip(slipModal, emp, "", periodLabel(slipModal))} className="mt-4 w-full bg-brand-500 text-white text-sm font-bold py-3 rounded-xl hover:bg-brand-600 shadow-brand">🖨 Print payslip</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // KIOSK CHOOSER — the single kiosk APK: after admin login, pick QR or Facial.
 // ════════════════════════════════════════════════════════════════════════════
 function KioskChooser({ adminUser, onPick, onLogout, online }) {
@@ -829,7 +1031,13 @@ function AdminLogin({ onLogin, onBack, onRegister }) {
       if (!data||data.password_hash!==btoa(p)) { setErr("Incorrect username or password."); setLoading(false); return; }
       if (data.must_change_password) { setMustChange(data); setLoading(false); return; } // force password change first
       await supabase.from('admin_accounts').update({last_login:new Date().toISOString()}).eq('id',data.id);
-      const user={id:data.id,username:data.username,role:data.role,departmentAccess:data.department_access||null,tenantId:data.tenant_id||null,loginTime:new Date().toLocaleTimeString("en-PH")};
+      // Tenant accounts are entitled to the module(s) they registered for.
+      let modules=null;
+      if (data.tenant_id && data.role!=='employee') {
+        const {data:reg}=await supabase.from('registrations').select('module').eq('id',data.tenant_id).maybeSingle();
+        modules=modulesOf(reg?.module);
+      }
+      const user={id:data.id,username:data.username,role:data.role,departmentAccess:data.department_access||null,tenantId:data.tenant_id||null,employeeId:data.employee_id||null,modules,loginTime:new Date().toLocaleTimeString("en-PH")};
       onLogin(user);
     } catch(e) { setErr("Login failed: "+e.message); setLoading(false); }
   };
@@ -841,7 +1049,12 @@ function AdminLogin({ onLogin, onBack, onRegister }) {
     setLoading(true); setErr("");
     try {
       await supabase.from('admin_accounts').update({password_hash:btoa(np),must_change_password:false,last_login:new Date().toISOString()}).eq('id',mustChange.id);
-      const user={id:mustChange.id,username:mustChange.username,role:mustChange.role,departmentAccess:mustChange.department_access||null,tenantId:mustChange.tenant_id||null,loginTime:new Date().toLocaleTimeString("en-PH")};
+      let modules=null;
+      if (mustChange.tenant_id && mustChange.role!=='employee') {
+        const {data:reg}=await supabase.from('registrations').select('module').eq('id',mustChange.tenant_id).maybeSingle();
+        modules=modulesOf(reg?.module);
+      }
+      const user={id:mustChange.id,username:mustChange.username,role:mustChange.role,departmentAccess:mustChange.department_access||null,tenantId:mustChange.tenant_id||null,employeeId:mustChange.employee_id||null,modules,loginTime:new Date().toLocaleTimeString("en-PH")};
       onLogin(user);
     } catch(e) { setErr("Failed: "+e.message); setLoading(false); }
   };
@@ -1884,12 +2097,44 @@ function AdminDashboard({ employees, allAttendance, leaves, onCardClick, activeD
 function AdminEmployees({ employees, setEmployees, addToast, onBulkImport, activeDept, activeRole, roles:managedRoles, adminUser }) {
   const [search,setSearch]=useState(""); const [deptFilter,setDept]=useState("all"); const [roleFilter,setRoleFilter]=useState("all"); const [statusFilter,setStF]=useState("all");
   const [modal,setModal]=useState(false); const [selected,setSelected]=useState(null); const [tab,setTab]=useState("info");
-  const [form,setForm]=useState({id:"",name:"",position:"",department:"",role:"Staff",contact:"",qrCode:"",rfidUid:"",faceDescriptors:[],status:"active",empType:"Regular",schedule:{...DEFAULT_SCHEDULE}});
+  const [form,setForm]=useState({id:"",name:"",position:"",department:"",role:"Staff",contact:"",qrCode:"",rfidUid:"",faceDescriptors:[],status:"active",empType:"Regular",monthlyRate:0,allowance:0,sssNo:"",philhealthNo:"",pagibigNo:"",tinNo:"",schedule:{...DEFAULT_SCHEDULE}});
   const [schedForm,setSchedForm]=useState({...DEFAULT_SCHEDULE});
   const [confirmDeact,setConfirmDeact]=useState(null); const [confirmDelete,setConfirmDelete]=useState(null);
   const [selIds,setSelIds]=useState([]); const [confirmBulkDel,setConfirmBulkDel]=useState(false); // bulk delete
   const [openMenu,setOpenMenu]=useState(null); // employee id whose action menu is open
   const [qrModal,setQrModal]=useState(false); const [qrSel,setQrSel]=useState([]);
+  // Employee portal login management
+  const [portalEmp,setPortalEmp]=useState(null); const [portalAcc,setPortalAcc]=useState(null);
+  const [portalForm,setPortalForm]=useState({email:"",password:""}); const [portalBusy,setPortalBusy]=useState(false);
+  const openPortal=async emp=>{
+    setPortalEmp(emp); setPortalAcc(undefined); setPortalForm({email:(emp.contact||"").includes("@")?emp.contact:"",password:""});
+    const {data}=await supabase.from('admin_accounts').select('id,username,is_active').eq('employee_id',emp.id).eq('role','employee').maybeSingle();
+    setPortalAcc(data||null);
+  };
+  const createPortal=async()=>{
+    const email=portalForm.email.trim().toLowerCase();
+    if(!/\S+@\S+\.\S+/.test(email)){ addToast("Enter a valid email.","error"); return; }
+    if(portalForm.password.length<6){ addToast("Password must be at least 6 characters.","error"); return; }
+    setPortalBusy(true);
+    const {data:taken}=await supabase.from('admin_accounts').select('id').eq('username',email).maybeSingle();
+    if(taken){ addToast("That email already has an account.","error"); setPortalBusy(false); return; }
+    const {error}=await supabase.from('admin_accounts').insert({username:email,password_hash:btoa(portalForm.password),role:'employee',employee_id:portalEmp.id,tenant_id:adminUser.tenantId||null,is_active:true,must_change_password:false});
+    setPortalBusy(false);
+    if(error){ addToast("Failed: "+error.message,"error"); return; }
+    await logAudit(adminUser,'portal_account_created',portalEmp.name,email);
+    addToast(`Portal login created for ${portalEmp.name}.`,"success");
+    openPortal(portalEmp);
+  };
+  const resetPortalPw=async()=>{
+    if(portalForm.password.length<6){ addToast("New password must be at least 6 characters.","error"); return; }
+    setPortalBusy(true);
+    await supabase.from('admin_accounts').update({password_hash:btoa(portalForm.password)}).eq('id',portalAcc.id);
+    setPortalBusy(false); addToast("Password updated.","success"); setPortalForm(f=>({...f,password:""}));
+  };
+  const togglePortal=async()=>{
+    await supabase.from('admin_accounts').update({is_active:!portalAcc.is_active}).eq('id',portalAcc.id);
+    addToast(portalAcc.is_active?"Portal login disabled.":"Portal login enabled.","info"); openPortal(portalEmp);
+  };
 
   useEffect(()=>{ if(typeof activeDept==="string"&&activeDept!=="all") setDept(activeDept); },[activeDept]);
 
@@ -1900,7 +2145,7 @@ function AdminEmployees({ employees, setEmployees, addToast, onBulkImport, activ
     return mq&&deptMatch(activeDept,e.department)&&(deptFilter==="all"||e.department===deptFilter)&&(!activeRole||activeRole==="all"||(e.role||"Staff")===activeRole)&&(roleFilter==="all"||(e.role||"Staff")===roleFilter)&&(statusFilter==="all"||e.status===statusFilter);
   });
 
-  const openAdd=()=>{setForm({id:`EMP${String(employees.length+1).padStart(3,"0")}`,name:"",position:"",department:(typeof activeDept==="string"&&activeDept!=="all")?activeDept:"",role:"Staff",contact:"",qrCode:"",rfidUid:"",faceDescriptors:[],status:"active",empType:"Regular",schedule:{...DEFAULT_SCHEDULE}});setTab("info");setModal("add");};
+  const openAdd=()=>{setForm({id:`EMP${String(employees.length+1).padStart(3,"0")}`,name:"",position:"",department:(typeof activeDept==="string"&&activeDept!=="all")?activeDept:"",role:"Staff",contact:"",qrCode:"",rfidUid:"",faceDescriptors:[],status:"active",empType:"Regular",monthlyRate:0,allowance:0,sssNo:"",philhealthNo:"",pagibigNo:"",tinNo:"",schedule:{...DEFAULT_SCHEDULE}});setTab("info");setModal("add");};
   const openEdit=emp=>{setSelected(emp);setForm({...emp,schedule:{...emp.schedule}});setTab("info");setModal("edit");};
   const openSchedule=emp=>{setSelected(emp);setSchedForm({...emp.schedule});setModal("schedule");};
   const openQR=emp=>{setSelected(emp);setModal("qr");};
@@ -1997,6 +2242,7 @@ function AdminEmployees({ employees, setEmployees, addToast, onBulkImport, activ
                           <button onClick={()=>{setOpenMenu(null);openEdit(emp);}} className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-brand-50 flex items-center gap-2.5"><Icon name="edit" className="w-4 h-4 text-gray-400"/> Edit</button>
                           <button onClick={()=>{setOpenMenu(null);openSchedule(emp);}} className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-brand-50 flex items-center gap-2.5"><Icon name="schedules" className="w-4 h-4 text-gray-400"/> Schedule</button>
                           <button onClick={()=>{setOpenMenu(null);openQR(emp);}} className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-brand-50 flex items-center gap-2.5"><Icon name="qr" className="w-4 h-4 text-gray-400"/> QR Code</button>
+                          <button onClick={()=>{setOpenMenu(null);openPortal(emp);}} className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-brand-50 flex items-center gap-2.5"><Icon name="accounts" className="w-4 h-4 text-gray-400"/> Portal Login</button>
                           <button onClick={()=>{setOpenMenu(null);setConfirmDeact(emp);}} className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-brand-50 flex items-center gap-2.5"><Icon name={emp.status==="active"?"pause":"play"} className="w-4 h-4 text-gray-400"/> {emp.status==="active"?"Deactivate":"Reactivate"}</button>
                           <div className="border-t border-gray-100 my-1"/>
                           <button onClick={()=>{setOpenMenu(null);setConfirmDelete(emp);}} className="w-full text-left px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-50 flex items-center gap-2.5"><Icon name="trash" className="w-4 h-4"/> Delete</button>
@@ -2019,7 +2265,7 @@ function AdminEmployees({ employees, setEmployees, addToast, onBulkImport, activ
               <button onClick={closeModal} className="text-white/40 hover:text-white text-2xl">×</button>
             </div>
             <div className="flex border-b border-gray-100 shrink-0">
-              {[{k:"info",l:"Info"},{k:"schedule",l:"Schedule"},{k:"face",l:"Face"}].map(({k,l})=>(
+              {[{k:"info",l:"Info"},{k:"schedule",l:"Schedule"},{k:"pay",l:"Pay"},{k:"face",l:"Face"}].map(({k,l})=>(
                 <button key={k} onClick={()=>setTab(k)} className={`flex-1 py-3.5 text-sm font-semibold transition-colors ${tab===k?"text-slate-800 border-b-2 border-brand-500":"text-gray-400 hover:text-gray-600"}`}>{l}</button>
               ))}
             </div>
@@ -2060,6 +2306,22 @@ function AdminEmployees({ employees, setEmployees, addToast, onBulkImport, activ
                     {form.faceDescriptors?.length>0&&<span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">✓ {form.faceDescriptors.length} sample(s)</span>}
                   </div>
                   {tab==="face"&&<FaceEnroll value={form.faceDescriptors||[]} onChange={d=>setForm(f=>({...f,faceDescriptors:d}))}/>}
+                </div>
+              ):tab==="pay"?(
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1.5">Monthly Rate (₱)</label>
+                      <input type="number" value={form.monthlyRate??""} onChange={e=>setForm(f=>({...f,monthlyRate:e.target.value}))} placeholder="e.g. 25000" className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200"/></div>
+                    <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1.5">Allowance / mo (₱, non-taxable)</label>
+                      <input type="number" value={form.allowance??""} onChange={e=>setForm(f=>({...f,allowance:e.target.value}))} placeholder="0" className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200"/></div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    {[["sssNo","SSS No."],["philhealthNo","PhilHealth No."],["pagibigNo","Pag-IBIG MID No."],["tinNo","TIN"]].map(([k,l])=>(
+                      <div key={k}><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1.5">{l}</label>
+                        <input value={form[k]||""} onChange={e=>setForm(f=>({...f,[k]:e.target.value}))} className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 font-mono"/></div>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-400">Used by Payroll to compute pay and statutory deductions. Daily rate = monthly ÷ work days per month (see Payroll → Settings).</p>
                 </div>
               ):<ScheduleForm value={form.schedule} onChange={s=>setForm(f=>({...f,schedule:s}))}/>}
             </div>
@@ -2103,6 +2365,42 @@ function AdminEmployees({ employees, setEmployees, addToast, onBulkImport, activ
         </div>
       )}
 
+      {/* Portal login modal */}
+      {portalEmp&&(
+        <div className="fixed inset-0 bg-slate-900/25 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={()=>setPortalEmp(null)}>
+          <div className="bg-white rounded-3xl p-7 max-w-sm w-full shadow-2xl" onClick={e=>e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-1">
+              <h2 className="text-lg font-black text-ink">Portal login</h2>
+              <button onClick={()=>setPortalEmp(null)} className="w-9 h-9 rounded-lg hover:bg-gray-100 text-gray-400">✕</button>
+            </div>
+            <p className="text-sm text-gray-500 mb-4">{portalEmp.name} — self-service access (attendance, leave &amp; offset requests, payslips).</p>
+            {portalAcc===undefined?<div className="text-center py-6 text-gray-400 text-sm">Loading…</div>
+            :portalAcc?(
+              <div className="space-y-3">
+                <div className="bg-brand-50 border border-brand-100 rounded-xl px-4 py-3 text-sm">
+                  <div className="font-bold text-brand-800">{portalAcc.username}</div>
+                  <div className="text-xs text-brand-700">{portalAcc.is_active?"Active — can sign in at the app":"Disabled"}</div>
+                </div>
+                <div><label className="text-xs font-bold text-gray-500 uppercase block mb-1">New password</label>
+                  <input type="text" value={portalForm.password} onChange={e=>setPortalForm(f=>({...f,password:e.target.value}))} placeholder="Set a new password" className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm"/></div>
+                <div className="flex gap-2">
+                  <button disabled={portalBusy} onClick={resetPortalPw} className="flex-1 bg-brand-500 text-white text-xs font-bold py-2.5 rounded-xl hover:bg-brand-600 disabled:opacity-50">Update password</button>
+                  <button onClick={togglePortal} className={`flex-1 text-xs font-bold py-2.5 rounded-xl ${portalAcc.is_active?"bg-red-50 text-red-600 hover:bg-red-100":"bg-gray-100 text-gray-700 hover:bg-gray-200"}`}>{portalAcc.is_active?"Disable login":"Enable login"}</button>
+                </div>
+              </div>
+            ):(
+              <div className="space-y-3">
+                <div><label className="text-xs font-bold text-gray-500 uppercase block mb-1">Email (their login)</label>
+                  <input type="email" value={portalForm.email} onChange={e=>setPortalForm(f=>({...f,email:e.target.value}))} placeholder="employee@email.com" className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm"/></div>
+                <div><label className="text-xs font-bold text-gray-500 uppercase block mb-1">Temporary password</label>
+                  <input type="text" value={portalForm.password} onChange={e=>setPortalForm(f=>({...f,password:e.target.value}))} placeholder="Min. 6 characters" className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm"/></div>
+                <button disabled={portalBusy} onClick={createPortal} className="w-full bg-brand-500 text-white text-sm font-bold py-3 rounded-xl hover:bg-brand-600 disabled:opacity-50 shadow-brand">{portalBusy?"Creating…":"Create portal login"}</button>
+                <p className="text-xs text-gray-400">Share the email + password with {portalEmp.name.split(" ")[0]} — they sign in at the same app login page.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       {confirmDeact&&(
         <div className="fixed inset-0 bg-slate-900/25 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={()=>setConfirmDeact(null)}>
           <div className="bg-white rounded-3xl w-full max-w-sm shadow-2xl p-7 text-center" onClick={e=>e.stopPropagation()}>
@@ -2734,6 +3032,395 @@ function AdminReports({ employees, allAttendance, leaves, addToast, initialStatu
   );
 }
 // ════════════════════════════════════════════════════════════════════════════
+// PAYROLL — Philippine-law engine (see src/payroll.js) + per-tenant settings.
+// ════════════════════════════════════════════════════════════════════════════
+function printPayslip(slip, emp, company, periodLabel) {
+  const w = window.open('', '_blank', 'width=720,height=900');
+  if (!w) return;
+  const rows = arr => arr.map(x=>`<tr><td>${x.label}</td><td class="amt">${peso(x.amount)}</td></tr>`).join('');
+  w.document.write(`<!DOCTYPE html><html><head><title>Payslip — ${emp?.name||slip.employee_id}</title><style>
+    body{font-family:'Segoe UI',sans-serif;color:#18191f;margin:32px;font-size:13px}
+    .head{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #5ac56b;padding-bottom:12px;margin-bottom:16px}
+    .brand{font-size:20px;font-weight:800}.brand span{color:#3a9c49}
+    h2{font-size:15px;margin:0}.muted{color:#717171;font-size:12px}
+    table{width:100%;border-collapse:collapse;margin:10px 0}
+    td{padding:6px 8px;border-bottom:1px solid #eee}.amt{text-align:right;font-variant-numeric:tabular-nums}
+    .sec{font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#3a9c49;margin-top:14px}
+    .tot td{font-weight:800;border-top:2px solid #18191f;border-bottom:none}
+    .net{background:#f0fcf2;border:2px solid #5ac56b;border-radius:10px;padding:12px 16px;display:flex;justify-content:space-between;font-size:16px;font-weight:800;margin-top:16px}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 24px;font-size:12px}
+    @media print{body{margin:12mm}}
+  </style></head><body>
+    <div class="head"><div class="brand">⚡ Bilis<span>Ops</span></div><div style="text-align:right"><h2>PAYSLIP</h2><div class="muted">${company||''}</div></div></div>
+    <div class="grid">
+      <div><b>${emp?.name||slip.employee_id}</b> · ${emp?.position||''}</div><div style="text-align:right">Pay period: <b>${periodLabel}</b></div>
+      <div class="muted">${emp?.department||''} · ID ${slip.employee_id}</div><div class="muted" style="text-align:right">Monthly rate: ${peso(slip.data.meta.monthlyRate)}</div>
+      <div class="muted">SSS ${emp?.sssNo||'—'} · PhilHealth ${emp?.philhealthNo||'—'}</div><div class="muted" style="text-align:right">Pag-IBIG ${emp?.pagibigNo||'—'} · TIN ${emp?.tinNo||'—'}</div>
+    </div>
+    <div class="sec">Earnings</div><table>${rows(slip.data.earnings)}<tr class="tot"><td>Gross Pay</td><td class="amt">${peso(slip.gross)}</td></tr></table>
+    <div class="sec">Deductions</div><table>${rows(slip.data.deductions)}<tr class="tot"><td>Total Deductions</td><td class="amt">${peso(slip.deductions)}</td></tr></table>
+    <div class="net"><span>NET PAY</span><span>${peso(slip.net)}</span></div>
+    <p class="muted" style="margin-top:20px">Employer contributions this month: SSS ${peso(slip.data.meta.employer.sss)} + EC ${peso(slip.data.meta.employer.ec)} · PhilHealth ${peso(slip.data.meta.employer.philhealth)} · Pag-IBIG ${peso(slip.data.meta.employer.pagibig)}</p>
+    <p class="muted">Generated by BilisOps · This is a system-generated payslip.</p>
+    <script>window.onload=()=>window.print()</script>
+  </body></html>`);
+  w.document.close();
+}
+
+function AdminPayroll({ employees, allAttendance, leaves, addToast, adminUser }) {
+  const [view,setView]=useState("runs"); // runs | settings
+  const [settings,setSettings]=useState(null);
+  const [runs,setRuns]=useState([]); const [loading,setLoading]=useState(true);
+  const [company,setCompany]=useState("");
+  const [preview,setPreview]=useState(null); // {periodStart,periodEnd,slips:[{employee_id,data,gross,deductions,net}]}
+  const [viewRun,setViewRun]=useState(null); // {run, slips}
+  const [slipModal,setSlipModal]=useState(null); // {slip, emp}
+  const [busy,setBusy]=useState(false); const [confirmDel,setConfirmDel]=useState(null);
+  const TODAY=getToday();
+  const empById=Object.fromEntries(employees.map(e=>[e.id,e]));
+
+  const load=useCallback(async()=>{
+    setLoading(true);
+    const [{data:st},{data:rn}]=await Promise.all([
+      supabase.from('payroll_settings').select('*').maybeSingle(),
+      supabase.from('payroll_runs').select('*').order('period_start',{ascending:false}).limit(24),
+    ]);
+    setSettings(mergeSettings(st?.settings));
+    setRuns(rn||[]);
+    if(adminUser?.tenantId){ const {data:reg}=await supabase.from('registrations').select('company').eq('id',adminUser.tenantId).maybeSingle(); setCompany(reg?.company||""); }
+    setLoading(false);
+  },[adminUser?.tenantId]);
+  useEffect(()=>{ load(); },[load]);
+
+  const saveSettings=async()=>{
+    setBusy(true);
+    const {error}=await supabase.from('payroll_settings').upsert({settings, updated_at:new Date().toISOString()},{onConflict:'tenant_id'});
+    setBusy(false);
+    if(error){ addToast("Failed to save: "+error.message,"error"); return; }
+    addToast("Payroll settings saved.","success");
+  };
+
+  // ── Build a run preview from attendance ────────────────────────────────────
+  const makePreview=(periodStart,periodEnd,periodsPerMonth)=>{
+    const S=settings;
+    const active=employees.filter(e=>e.status==="active");
+    const paid=active.filter(e=>(Number(e.monthlyRate)||0)>0);
+    const skipped=active.length-paid.length;
+    const isSecondHalf=Number(periodEnd.slice(8,10))>15;
+    const deductContributions=periodsPerMonth===1?true:(S.deductions.contributionsCutoff==='second'?isSecondHalf:S.deductions.contributionsCutoff==='first'?!isSecondHalf:true);
+    const slips=paid.map(emp=>{
+      const rows=[];
+      for(const [date,recs] of Object.entries(allAttendance)){
+        if(date>=periodStart&&date<=periodEnd&&recs[emp.id]) rows.push(recs[emp.id]);
+      }
+      const approved=(leaves||[]).filter(l=>l.employee_id===emp.id&&(l.status??'approved')==='approved');
+      const data=computePayslip(emp,rows,approved,S,{periodStart,periodEnd,deductContributions,periodsPerMonth});
+      return {employee_id:emp.id, data, gross:data.gross, deductions:data.totalDeductions, net:data.net};
+    });
+    setPreview({periodStart,periodEnd,slips,skipped});
+  };
+
+  const periodPresets=()=>{
+    const [y,m]=[TODAY.slice(0,4),TODAY.slice(5,7)];
+    const last=new Date(Number(y),Number(m),0).getDate();
+    return [
+      {l:`${m}/01 – ${m}/15`, s:`${y}-${m}-01`, e:`${y}-${m}-15`, ppm:2},
+      {l:`${m}/16 – ${m}/${last}`, s:`${y}-${m}-16`, e:`${y}-${m}-${String(last).padStart(2,'0')}`, ppm:2},
+      {l:`Full month ${m}/${y}`, s:`${y}-${m}-01`, e:`${y}-${m}-${String(last).padStart(2,'0')}`, ppm:1},
+    ];
+  };
+
+  const saveRun=async(finalize)=>{
+    if(!preview?.slips?.length){ addToast("Nothing to save — no employees with a monthly rate.","error"); return; }
+    setBusy(true);
+    const {data:ins,error}=await supabase.from('payroll_runs').insert({period_start:preview.periodStart,period_end:preview.periodEnd,pay_date:TODAY,status:finalize?'final':'draft',created_by:adminUser.username});
+    if(error){ setBusy(false); addToast("Failed: "+error.message,"error"); return; }
+    // The real client returns no rows unless .select() is chained; the stub returns them.
+    let runId=ins?.[0]?.id;
+    if(!runId){
+      const {data:latest}=await supabase.from('payroll_runs').select('*').order('created_at',{ascending:false}).limit(1);
+      runId=latest?.[0]?.id;
+    }
+    if(!runId){ setBusy(false); addToast("Failed: could not read back the new run.","error"); return; }
+    const {error:e2}=await supabase.from('payslips').insert(preview.slips.map(s=>({run_id:runId,employee_id:s.employee_id,data:s.data,gross:s.gross,deductions:s.deductions,net:s.net})));
+    setBusy(false);
+    if(e2){ addToast("Failed to save payslips: "+e2.message,"error"); return; }
+    await logAudit(adminUser,'payroll_run_created',null,`${preview.periodStart} → ${preview.periodEnd} (${preview.slips.length} payslips${finalize?', finalized':', draft'})`);
+    addToast(finalize?"Payroll run finalized — payslips are now visible to employees.":"Payroll run saved as draft.","success");
+    setPreview(null); load();
+  };
+
+  const openRun=async run=>{
+    const {data}=await supabase.from('payslips').select('*').eq('run_id',run.id).order('employee_id');
+    setViewRun({run, slips:data||[]});
+  };
+  const finalizeRun=async run=>{ await supabase.from('payroll_runs').update({status:'final'}).eq('id',run.id); addToast("Run finalized — employees can now see their payslips.","success"); setViewRun(null); load(); };
+  const deleteRun=async()=>{ const run=confirmDel; setConfirmDel(null); await supabase.from('payslips').delete().eq('run_id',run.id); await supabase.from('payroll_runs').delete().eq('id',run.id); addToast("Run deleted.","info"); setViewRun(null); load(); };
+  const periodLabel=r=>`${fmtDate(r.period_start||r.periodStart)} – ${fmtDate(r.period_end||r.periodEnd)}`;
+
+  const num=(v,def=0)=>{const n=Number(v);return Number.isFinite(n)?n:def;};
+  const setS=(path,v)=>setSettings(p=>{ const c=JSON.parse(JSON.stringify(p)); const ks=path.split('.'); let o=c; while(ks.length>1)o=o[ks.shift()]; o[ks[0]]=v; return c; });
+
+  if(loading||!settings) return <div className="text-center py-20 text-gray-400 text-sm">Loading payroll…</div>;
+
+  return (
+    <div>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
+        <div>
+          <h1 className="text-xl font-black text-ink flex items-center gap-2"><Icon name="payroll" className="w-5 h-5 text-brand-600"/> Payroll</h1>
+          <p className="text-sm text-gray-500 mt-0.5">Philippine statutory payroll — computed straight from attendance.</p>
+        </div>
+        <div className="flex gap-2">
+          {[["runs","Pay Runs"],["settings","Settings"]].map(([k,l])=>(
+            <button key={k} onClick={()=>setView(k)} className={`px-4 py-2 rounded-xl text-xs font-bold border transition-colors ${view===k?"bg-brand-500 text-white border-brand-500":"bg-white text-gray-600 border-gray-200 hover:border-brand-300"}`}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      {view==="runs"&&(
+        <div className="space-y-5">
+          {/* New run */}
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
+            <h2 className="font-bold text-gray-800 mb-1">New pay run</h2>
+            <p className="text-xs text-gray-400 mb-4">Pick a period — pay is computed for every active employee with a monthly rate (set it in Employees → Edit → Pay).</p>
+            <div className="flex gap-2 flex-wrap">
+              {periodPresets().map(p=>(
+                <button key={p.l} onClick={()=>makePreview(p.s,p.e,p.ppm)} className="px-4 py-2.5 rounded-xl text-xs font-bold border bg-gray-50 text-gray-700 border-gray-200 hover:border-brand-400 hover:bg-brand-50 transition-colors">{p.l}</button>
+              ))}
+            </div>
+            {preview&&(
+              <div className="mt-5 border-t border-gray-100 pt-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="font-bold text-sm text-gray-800">Preview — {fmtDate(preview.periodStart)} to {fmtDate(preview.periodEnd)} <span className="text-gray-400 font-normal">({preview.slips.length} employees{preview.skipped>0?`, ${preview.skipped} skipped — no rate set`:''})</span></div>
+                  <div className="flex gap-2">
+                    <button disabled={busy} onClick={()=>saveRun(false)} className="px-4 py-2 rounded-xl text-xs font-bold border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-50">Save draft</button>
+                    <button disabled={busy} onClick={()=>saveRun(true)} className="px-4 py-2 rounded-xl text-xs font-bold bg-brand-500 text-white hover:bg-brand-600 disabled:opacity-50 shadow-brand">{busy?"Saving…":"Finalize & release"}</button>
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead><tr className="border-b border-gray-100 bg-gray-50/60">{["Employee","Gross","Deductions","Net",""].map(h=><th key={h} className="text-left text-xs font-semibold text-gray-400 uppercase tracking-wider px-4 py-2.5">{h}</th>)}</tr></thead>
+                    <tbody className="divide-y divide-gray-50">
+                      {preview.slips.map(s=>(
+                        <tr key={s.employee_id} className="hover:bg-gray-50/60">
+                          <td className="px-4 py-3"><div className="font-semibold text-gray-800">{empById[s.employee_id]?.name||s.employee_id}</div><div className="text-xs text-gray-400">{empById[s.employee_id]?.department}</div></td>
+                          <td className="px-4 py-3 font-mono text-xs">{peso(s.gross)}</td>
+                          <td className="px-4 py-3 font-mono text-xs text-red-600">−{peso(s.deductions)}</td>
+                          <td className="px-4 py-3 font-mono text-xs font-bold text-brand-700">{peso(s.net)}</td>
+                          <td className="px-4 py-3"><button onClick={()=>setSlipModal({slip:s, emp:empById[s.employee_id], label:`${fmtDate(preview.periodStart)} – ${fmtDate(preview.periodEnd)}`})} className="text-xs font-bold text-brand-600 hover:text-brand-700">View</button></td>
+                        </tr>
+                      ))}
+                      {preview.slips.length===0&&<tr><td colSpan={5} className="text-center py-8 text-gray-400 text-sm">No employees with a monthly rate yet — set rates in Employees → Edit → Pay.</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Past runs */}
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100"><h2 className="font-bold text-gray-800">Pay runs <span className="opacity-40">({runs.length})</span></h2></div>
+            <table className="w-full text-sm">
+              <thead><tr className="border-b border-gray-100 bg-gray-50/60">{["Period","Created","Status","Actions"].map(h=><th key={h} className="text-left text-xs font-semibold text-gray-400 uppercase tracking-wider px-5 py-3">{h}</th>)}</tr></thead>
+              <tbody className="divide-y divide-gray-50">
+                {runs.length===0?<tr><td colSpan={4} className="text-center py-10 text-gray-400 text-sm">No pay runs yet — create your first one above.</td></tr>
+                 :runs.map(r=>(
+                  <tr key={r.id} className="hover:bg-gray-50/60">
+                    <td className="px-5 py-3.5 font-semibold text-gray-800">{periodLabel(r)}</td>
+                    <td className="px-5 py-3.5 text-xs text-gray-500">{r.created_by||"—"} · {r.created_at?fmtDate(String(r.created_at).slice(0,10)):""}</td>
+                    <td className="px-5 py-3.5"><span className={`text-xs font-bold px-2.5 py-1 rounded-full border ${r.status==='final'?"bg-brand-50 text-brand-700 border-brand-200":"bg-amber-50 text-amber-700 border-amber-200"}`}>{r.status==='final'?'Finalized':'Draft'}</span></td>
+                    <td className="px-5 py-3.5">
+                      <div className="flex gap-1.5">
+                        <button onClick={()=>openRun(r)} className="text-xs font-bold px-3 py-1.5 rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200">Open</button>
+                        {r.status!=='final'&&<button onClick={()=>finalizeRun(r)} className="text-xs font-bold px-3 py-1.5 rounded-lg bg-brand-500 text-white hover:bg-brand-600">Finalize</button>}
+                        <button onClick={()=>setConfirmDel(r)} className="text-gray-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50"><Icon name="trash" className="w-4 h-4"/></button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {view==="settings"&&(
+        <div className="space-y-5">
+          <div className="bg-brand-50 border border-brand-100 rounded-2xl px-5 py-4 text-sm text-brand-800">
+            Pre-loaded with the <b>2026 Philippine statutory defaults</b> (SSS 15%, PhilHealth 5%, Pag-IBIG 2%/2%, TRAIN tax table, DOLE premium rates). Edit anything — new pay runs use your values; finalized payslips are never changed retroactively.
+          </div>
+          <div className="grid md:grid-cols-2 gap-5">
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 space-y-3">
+              <h3 className="font-bold text-gray-800">Pay basis</h3>
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="text-xs font-bold text-gray-500 uppercase block mb-1">Frequency</label>
+                  <select value={settings.payFrequency} onChange={e=>setS('payFrequency',e.target.value)} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm"><option value="semi-monthly">Semi-monthly</option><option value="monthly">Monthly</option></select></div>
+                <div><label className="text-xs font-bold text-gray-500 uppercase block mb-1">Work days / month</label>
+                  <input type="number" value={settings.workDaysPerMonth} onChange={e=>setS('workDaysPerMonth',num(e.target.value,26))} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm"/></div>
+                <div><label className="text-xs font-bold text-gray-500 uppercase block mb-1">Hours / day</label>
+                  <input type="number" value={settings.hoursPerDay} onChange={e=>setS('hoursPerDay',num(e.target.value,8))} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm"/></div>
+                <div><label className="text-xs font-bold text-gray-500 uppercase block mb-1">Contributions cutoff</label>
+                  <select value={settings.deductions.contributionsCutoff} onChange={e=>setS('deductions.contributionsCutoff',e.target.value)} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm"><option value="second">2nd half</option><option value="first">1st half</option><option value="split">Split 50/50</option></select></div>
+              </div>
+              <label className="flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" checked={settings.deductions.deductLates} onChange={e=>setS('deductions.deductLates',e.target.checked)} className="accent-brand-600"/> Deduct lates (per minute)</label>
+              <label className="flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" checked={settings.deductions.deductAbsences} onChange={e=>setS('deductions.deductAbsences',e.target.checked)} className="accent-brand-600"/> Deduct absences (daily rate)</label>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 space-y-3">
+              <h3 className="font-bold text-gray-800">Labor Code premiums (%)</h3>
+              <div className="grid grid-cols-2 gap-3">
+                {[["premiums.overtimePct","Overtime"],["premiums.nightDiffPct","Night diff (10PM–6AM)"],["premiums.restDayPct","Rest day worked"],["premiums.specialHolidayPct","Special day worked"],["premiums.regularHolidayPct","Regular holiday worked"]].map(([p,l])=>(
+                  <div key={p}><label className="text-xs font-bold text-gray-500 uppercase block mb-1">{l}</label>
+                    <input type="number" value={p.split('.').reduce((o,k)=>o[k],settings)} onChange={e=>setS(p,num(e.target.value))} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm"/></div>
+                ))}
+              </div>
+              <label className="flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" checked={settings.premiums.regularHolidayUnworkedPaid} onChange={e=>setS('premiums.regularHolidayUnworkedPaid',e.target.checked)} className="accent-brand-600"/> Regular holidays paid even if unworked</label>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 space-y-3">
+              <h3 className="font-bold text-gray-800">SSS</h3>
+              <div className="grid grid-cols-2 gap-3">
+                {[["sss.rateEmployee","Employee %"],["sss.rateEmployer","Employer %"],["sss.mscFloor","MSC floor ₱"],["sss.mscCeiling","MSC ceiling ₱"],["sss.ecSmall","EC below threshold ₱"],["sss.ecBig","EC at/above ₱"],["sss.ecThreshold","EC threshold ₱"],["sss.mscStep","MSC step ₱"]].map(([p,l])=>(
+                  <div key={p}><label className="text-xs font-bold text-gray-500 uppercase block mb-1">{l}</label>
+                    <input type="number" value={p.split('.').reduce((o,k)=>o[k],settings)} onChange={e=>setS(p,num(e.target.value))} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm"/></div>
+                ))}
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 space-y-4">
+              <div>
+                <h3 className="font-bold text-gray-800 mb-2">PhilHealth</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  {[["philhealth.rateTotal","Total premium %"],["philhealth.employeeSharePct","Employee share %"],["philhealth.salaryFloor","Salary floor ₱"],["philhealth.salaryCeiling","Salary ceiling ₱"]].map(([p,l])=>(
+                    <div key={p}><label className="text-xs font-bold text-gray-500 uppercase block mb-1">{l}</label>
+                      <input type="number" value={p.split('.').reduce((o,k)=>o[k],settings)} onChange={e=>setS(p,num(e.target.value))} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm"/></div>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-800 mb-2">Pag-IBIG</h3>
+                <div className="grid grid-cols-3 gap-3">
+                  {[["pagibig.rateEmployee","Employee %"],["pagibig.rateEmployer","Employer %"],["pagibig.salaryCap","Salary cap ₱"]].map(([p,l])=>(
+                    <div key={p}><label className="text-xs font-bold text-gray-500 uppercase block mb-1">{l}</label>
+                      <input type="number" value={p.split('.').reduce((o,k)=>o[k],settings)} onChange={e=>setS(p,num(e.target.value))} className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm"/></div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
+            <h3 className="font-bold text-gray-800 mb-1">Withholding tax brackets (annual, TRAIN law)</h3>
+            <p className="text-xs text-gray-400 mb-3">tax = base + rate% × (taxable − over). Edit if the law changes.</p>
+            <div className="overflow-x-auto"><table className="text-sm w-full max-w-xl">
+              <thead><tr className="text-xs text-gray-400 uppercase"><th className="text-left px-2 py-1">Over ₱</th><th className="text-left px-2 py-1">Base tax ₱</th><th className="text-left px-2 py-1">Rate %</th><th/></tr></thead>
+              <tbody>
+                {settings.taxBrackets.map((b,i)=>(
+                  <tr key={i}>
+                    {["over","base","rate"].map(k=>(
+                      <td key={k} className="px-2 py-1"><input type="number" value={b[k]} onChange={e=>{const v=num(e.target.value);setSettings(p=>{const c=JSON.parse(JSON.stringify(p));c.taxBrackets[i][k]=v;return c;});}} className="w-32 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-mono"/></td>
+                    ))}
+                    <td><button onClick={()=>setSettings(p=>({...p,taxBrackets:p.taxBrackets.filter((_,j)=>j!==i)}))} className="text-gray-300 hover:text-red-500 px-2">✕</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table></div>
+            <button onClick={()=>setSettings(p=>({...p,taxBrackets:[...p.taxBrackets,{over:0,base:0,rate:0}]}))} className="mt-2 text-xs font-bold text-brand-600 hover:text-brand-700">+ Add bracket</button>
+          </div>
+
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
+            <h3 className="font-bold text-gray-800 mb-1">Holiday calendar</h3>
+            <p className="text-xs text-gray-400 mb-3">Regular = 200% if worked (paid if unworked). Special = +30% if worked, no-work-no-pay. Add local holidays for your city.</p>
+            <div className="grid sm:grid-cols-2 gap-2">
+              {(settings.holidays||[]).map((h,i)=>(
+                <div key={i} className="flex items-center gap-2">
+                  <input type="date" value={h.date} onChange={e=>setSettings(p=>{const c=JSON.parse(JSON.stringify(p));c.holidays[i].date=e.target.value;return c;})} className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs"/>
+                  <input value={h.name} onChange={e=>setSettings(p=>{const c=JSON.parse(JSON.stringify(p));c.holidays[i].name=e.target.value;return c;})} className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-xs"/>
+                  <select value={h.type} onChange={e=>setSettings(p=>{const c=JSON.parse(JSON.stringify(p));c.holidays[i].type=e.target.value;return c;})} className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs"><option value="regular">Regular</option><option value="special">Special</option></select>
+                  <button onClick={()=>setSettings(p=>({...p,holidays:p.holidays.filter((_,j)=>j!==i)}))} className="text-gray-300 hover:text-red-500">✕</button>
+                </div>
+              ))}
+            </div>
+            <button onClick={()=>setSettings(p=>({...p,holidays:[...(p.holidays||[]),{date:TODAY,name:"New holiday",type:"special"}]}))} className="mt-3 text-xs font-bold text-brand-600 hover:text-brand-700">+ Add holiday</button>
+          </div>
+
+          <div className="flex justify-end">
+            <button disabled={busy} onClick={saveSettings} className="bg-brand-500 text-white text-sm font-bold px-6 py-3 rounded-xl hover:bg-brand-600 disabled:opacity-50 shadow-brand">{busy?"Saving…":"Save settings"}</button>
+          </div>
+        </div>
+      )}
+
+      {/* Run detail modal */}
+      {viewRun&&(
+        <div className="fixed inset-0 bg-slate-900/25 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={()=>setViewRun(null)}>
+          <div className="bg-white rounded-3xl w-full max-w-3xl max-h-[85vh] overflow-y-auto shadow-2xl" onClick={e=>e.stopPropagation()}>
+            <div className="px-7 py-5 border-b border-gray-100 flex items-center justify-between sticky top-0 bg-white">
+              <div><h2 className="font-black text-ink">{periodLabel(viewRun.run)}</h2><div className="text-xs text-gray-400">{viewRun.slips.length} payslips · {viewRun.run.status==='final'?'Finalized':'Draft'}</div></div>
+              <div className="flex gap-2">
+                {viewRun.run.status!=='final'&&<button onClick={()=>finalizeRun(viewRun.run)} className="text-xs font-bold px-4 py-2 rounded-xl bg-brand-500 text-white hover:bg-brand-600">Finalize</button>}
+                <button onClick={()=>setViewRun(null)} className="w-9 h-9 rounded-lg hover:bg-gray-100 text-gray-400">✕</button>
+              </div>
+            </div>
+            <table className="w-full text-sm">
+              <thead><tr className="border-b border-gray-100 bg-gray-50/60">{["Employee","Gross","Deductions","Net",""].map(h=><th key={h} className="text-left text-xs font-semibold text-gray-400 uppercase tracking-wider px-5 py-3">{h}</th>)}</tr></thead>
+              <tbody className="divide-y divide-gray-50">
+                {viewRun.slips.map(s=>(
+                  <tr key={s.id||s.employee_id}>
+                    <td className="px-5 py-3"><div className="font-semibold text-gray-800">{empById[s.employee_id]?.name||s.employee_id}</div></td>
+                    <td className="px-5 py-3 font-mono text-xs">{peso(s.gross)}</td>
+                    <td className="px-5 py-3 font-mono text-xs text-red-600">−{peso(s.deductions)}</td>
+                    <td className="px-5 py-3 font-mono text-xs font-bold text-brand-700">{peso(s.net)}</td>
+                    <td className="px-5 py-3 whitespace-nowrap">
+                      <button onClick={()=>setSlipModal({slip:s, emp:empById[s.employee_id], label:periodLabel(viewRun.run)})} className="text-xs font-bold text-brand-600 hover:text-brand-700 mr-3">View</button>
+                      <button onClick={()=>printPayslip(s, empById[s.employee_id], company, periodLabel(viewRun.run))} className="text-xs font-bold text-gray-500 hover:text-gray-800">🖨 Print</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Payslip detail modal */}
+      {slipModal&&(
+        <div className="fixed inset-0 bg-slate-900/25 backdrop-blur-sm z-[60] flex items-center justify-center p-4" onClick={()=>setSlipModal(null)}>
+          <div className="bg-white rounded-3xl w-full max-w-md max-h-[85vh] overflow-y-auto shadow-2xl p-7" onClick={e=>e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-1">
+              <h2 className="font-black text-ink">{slipModal.emp?.name||slipModal.slip.employee_id}</h2>
+              <button onClick={()=>setSlipModal(null)} className="w-9 h-9 rounded-lg hover:bg-gray-100 text-gray-400">✕</button>
+            </div>
+            <div className="text-xs text-gray-400 mb-4">{slipModal.label}</div>
+            <div className="text-xs font-bold text-brand-700 uppercase tracking-wider mb-1">Earnings</div>
+            {slipModal.slip.data.earnings.map((e,i)=><div key={i} className="flex justify-between text-sm py-1 border-b border-gray-50"><span className="text-gray-600">{e.label}</span><span className="font-mono">{peso(e.amount)}</span></div>)}
+            <div className="flex justify-between text-sm py-1.5 font-bold"><span>Gross</span><span className="font-mono">{peso(slipModal.slip.gross)}</span></div>
+            <div className="text-xs font-bold text-red-600 uppercase tracking-wider mt-3 mb-1">Deductions</div>
+            {slipModal.slip.data.deductions.map((d,i)=><div key={i} className="flex justify-between text-sm py-1 border-b border-gray-50"><span className="text-gray-600">{d.label}</span><span className="font-mono">−{peso(d.amount)}</span></div>)}
+            <div className="flex justify-between text-sm py-1.5 font-bold"><span>Total deductions</span><span className="font-mono">−{peso(slipModal.slip.deductions)}</span></div>
+            <div className="mt-4 bg-brand-50 border border-brand-200 rounded-2xl px-4 py-3 flex justify-between font-black text-brand-800"><span>NET PAY</span><span className="font-mono">{peso(slipModal.slip.net)}</span></div>
+            <button onClick={()=>printPayslip(slipModal.slip, slipModal.emp, company, slipModal.label)} className="mt-4 w-full bg-brand-500 text-white text-sm font-bold py-3 rounded-xl hover:bg-brand-600 shadow-brand">🖨 Print payslip</button>
+          </div>
+        </div>
+      )}
+
+      {confirmDel&&(
+        <div className="fixed inset-0 bg-slate-900/25 backdrop-blur-sm z-[60] flex items-center justify-center p-4" onClick={()=>setConfirmDel(null)}>
+          <div className="bg-white rounded-3xl p-7 max-w-sm w-full shadow-2xl" onClick={e=>e.stopPropagation()}>
+            <h2 className="text-lg font-black text-ink mb-2">Delete pay run</h2>
+            <p className="text-sm text-gray-500 mb-5">Delete the run for <b>{periodLabel(confirmDel)}</b> and all its payslips? This can't be undone.</p>
+            <div className="flex gap-3">
+              <button onClick={()=>setConfirmDel(null)} className="flex-1 border border-gray-200 text-gray-600 text-sm font-semibold py-2.5 rounded-xl hover:bg-gray-50">Cancel</button>
+              <button onClick={deleteRun} className="flex-1 bg-red-600 text-white text-sm font-bold py-2.5 rounded-xl hover:bg-red-700">Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // ADMIN REGISTRATIONS — review sign-ups from the Register page; approve to
 // create the login account, or reject.
 // ════════════════════════════════════════════════════════════════════════════
@@ -3179,12 +3866,21 @@ function AdminLeaves({ employees, leaves, addToast, activeDept, adminUser, reloa
     const {error}=await supabase.from('leaves').insert({
       employee_id:form.employee_id, date_from:form.date_from, date_to:form.date_to,
       leave_type:form.leave_type, reason:form.reason||null, filed_by:adminUser.username,
+      status:'approved', reviewed_by:adminUser.username,
     });
     setSaving(false);
     if (error){ addToast("Failed to file leave: "+error.message,"error"); return; }
     await logAudit(adminUser,"leave_filed",empName(form.employee_id),`${form.leave_type} ${form.date_from}→${form.date_to}`);
     addToast(`Leave filed for ${empName(form.employee_id)}.`,"success");
     setForm({employee_id:"",date_from:getToday(),date_to:getToday(),leave_type:"leave",reason:""});
+    reloadData?.();
+  };
+  // Approve/reject employee-filed requests (leave or offset)
+  const reviewLeave=async(l,verdict)=>{
+    const {error}=await supabase.from('leaves').update({status:verdict,reviewed_by:adminUser.username}).eq('id',l.id);
+    if(error){ addToast("Failed: "+error.message,"error"); return; }
+    await logAudit(adminUser,`leave_${verdict}`,empName(l.employee_id),`${l.leave_type} ${String(l.date_from).slice(0,10)}→${String(l.date_to).slice(0,10)}`);
+    addToast(`${l.leave_type==="offset"?"Offset":"Leave"} request ${verdict}.`,verdict==='approved'?"success":"info");
     reloadData?.();
   };
   const doDelete=async()=>{
@@ -3238,20 +3934,27 @@ function AdminLeaves({ employees, leaves, addToast, activeDept, adminUser, reloa
         <div className="px-6 py-4 border-b border-gray-100"><h2 className="font-bold text-gray-800">Filed Leaves <span className="opacity-40">({visibleLeaves.length})</span></h2></div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead><tr className="border-b border-gray-100 bg-gray-50/60">{["Employee","Type","From","To","Reason","Filed By",""].map(h=><th key={h} className="text-left text-xs font-semibold text-gray-400 uppercase tracking-wider px-5 py-3.5">{h}</th>)}</tr></thead>
+            <thead><tr className="border-b border-gray-100 bg-gray-50/60">{["Employee","Type","From","To","Reason","Filed By","Status",""].map(h=><th key={h} className="text-left text-xs font-semibold text-gray-400 uppercase tracking-wider px-5 py-3.5">{h}</th>)}</tr></thead>
             <tbody className="divide-y divide-gray-50">
-              {visibleLeaves.length===0?<tr><td colSpan={7} className="text-center py-12 text-gray-400 text-sm">No leaves filed</td></tr>
-                :visibleLeaves.map(l=>(
-                  <tr key={l.id} className="hover:bg-gray-50/60 transition-colors">
+              {visibleLeaves.length===0?<tr><td colSpan={8} className="text-center py-12 text-gray-400 text-sm">No leaves filed</td></tr>
+                :visibleLeaves.map(l=>{ const st=l.status??'approved'; return (
+                  <tr key={l.id} className={`hover:bg-gray-50/60 transition-colors ${st==='pending'?"bg-amber-50/40":""}`}>
                     <td className="px-5 py-3.5"><div className="font-semibold text-gray-800">{empName(l.employee_id)}</div><div className="text-xs text-gray-400">{empDept(l.employee_id)}</div></td>
-                    <td className="px-5 py-3.5"><span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-brand-100 text-brand-700 border border-brand-200 capitalize">{l.leave_type}</span></td>
+                    <td className="px-5 py-3.5"><span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-brand-100 text-brand-700 border border-brand-200 capitalize">{l.leave_type}{l.offset_hours?` ${l.offset_hours}h`:""}</span></td>
                     <td className="px-5 py-3.5 text-xs text-gray-600 whitespace-nowrap">{fmtDate(String(l.date_from).slice(0,10))}</td>
                     <td className="px-5 py-3.5 text-xs text-gray-600 whitespace-nowrap">{fmtDate(String(l.date_to).slice(0,10))}</td>
                     <td className="px-5 py-3.5 text-xs text-gray-500">{l.reason||"—"}</td>
                     <td className="px-5 py-3.5 text-xs text-gray-400">{l.filed_by||"—"}</td>
-                    <td className="px-5 py-3.5"><button onClick={()=>setConfirmDel(l)} className="px-2.5 py-1.5 text-xs font-semibold text-red-600 bg-red-50 hover:bg-red-100 rounded-lg">Remove</button></td>
+                    <td className="px-5 py-3.5"><span className={`text-xs font-bold px-2.5 py-1 rounded-full border capitalize ${st==='approved'?"bg-brand-50 text-brand-700 border-brand-200":st==='rejected'?"bg-red-50 text-red-700 border-red-200":"bg-amber-50 text-amber-700 border-amber-200"}`}>{st}</span></td>
+                    <td className="px-5 py-3.5 whitespace-nowrap">
+                      {st==='pending'&&<>
+                        <button onClick={()=>reviewLeave(l,'approved')} className="px-2.5 py-1.5 text-xs font-bold text-white bg-brand-500 hover:bg-brand-600 rounded-lg mr-1.5">Approve</button>
+                        <button onClick={()=>reviewLeave(l,'rejected')} className="px-2.5 py-1.5 text-xs font-semibold text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg mr-1.5">Reject</button>
+                      </>}
+                      <button onClick={()=>setConfirmDel(l)} className="px-2.5 py-1.5 text-xs font-semibold text-red-600 bg-red-50 hover:bg-red-100 rounded-lg">Remove</button>
+                    </td>
                   </tr>
-                ))
+                );})
               }
             </tbody>
           </table>
@@ -3646,7 +4349,13 @@ function ErrorScreen({ message, onRetry }) {
 // ════════════════════════════════════════════════════════════════════════════
 function AdminPortal({ employees, setEmployees, allAttendance, leaves, roles, adminUser, addToast, onLogout, reloadData, quietRefresh }) {
   // The admin-backoffice domain (VITE_APP_MODE=admin) opens on Registrations; the app opens on the dashboard.
-  const [page,setPage]=useState(ADMIN_ONLY ? "registrations" : "dashboard"); const [reportFilter,setRF]=useState("all"); const [reportRange,setReportRange]=useState(null); const [showBulk,setShowBulk]=useState(false);
+  // Land on the page that matches the tenant's plan (admin domain → Registrations).
+  const [page,setPage]=useState(
+    ADMIN_ONLY ? "registrations" :
+    hasMod(adminUser,'attendance') ? "dashboard" :
+    hasMod(adminUser,'payroll') ? "payroll" :
+    hasMod(adminUser,'directory') ? "directory" : "employees"
+  ); const [reportFilter,setRF]=useState("all"); const [reportRange,setReportRange]=useState(null); const [showBulk,setShowBulk]=useState(false);
   const [hovered,setHovered]=useState(false);
   const logoTaps=useRef(0); const logoTimer=useRef(null);
   const handleLogoTap=()=>{
@@ -3695,20 +4404,21 @@ function AdminPortal({ employees, setEmployees, allAttendance, leaves, roles, ad
   const [roleMenuOpen,setRoleMenuOpen]=useState(false);
 
   const NAV=[
-    {k:"dashboard",l:"Dashboard",icon:"dashboard"},
-    {k:"employees",l:"Employees",icon:"employees"},
-    {k:"directory",l:"Directory",icon:"directory"},
-    {k:"schedules",l:"Schedules",icon:"schedules"},
-    {k:"leaves",   l:"Leave",    icon:"leaves"},
-    {k:"manpower", l:"Manpower Planning",icon:"manpower"},
-    {k:"behavior", l:"Behavior", icon:"behavior"},
-    {k:"reports",  l:"Reports",  icon:"reports"},
+    {k:"dashboard",l:"Dashboard",icon:"dashboard",mod:"attendance"},
+    {k:"employees",l:"Employees",icon:"employees"},                       // core — every module needs the roster
+    {k:"directory",l:"Directory",icon:"directory",mod:"directory"},
+    {k:"schedules",l:"Schedules",icon:"schedules",mod:"attendance"},
+    {k:"leaves",   l:"Leave",    icon:"leaves",   mod:"attendance"},
+    {k:"manpower", l:"Manpower Planning",icon:"manpower",mod:"attendance"},
+    {k:"behavior", l:"Behavior", icon:"behavior", mod:"attendance"},
+    {k:"reports",  l:"Reports",  icon:"reports",  mod:"attendance"},
+    {k:"payroll",  l:"Payroll",  icon:"payroll",  mod:"payroll"},
     {k:"registrations", l:"Registrations", icon:"userplus",superOnly:true},
     {k:"accounts", l:"Accounts", icon:"accounts",superOnly:true},
     {k:"audit",    l:"Settings", icon:"settings",superOnly:true},
   ];
   const goToReports=(status,from,to)=>{setRF(status);setReportRange({from,to,n:(reportRange?.n||0)+1});setPage("reports");};
-  const nav=NAV.filter(n=>!n.superOnly||isSuperAdmin);
+  const nav=NAV.filter(n=>(!n.superOnly||isSuperAdmin)&&(!n.mod||hasMod(adminUser,n.mod)));
   const go=k=>{ if(k==="reports"){ setRF("all"); setReportRange(null); } setPage(k); setMobileOpen(false); quietRefresh?.(); };
   const toggleDept=d=>setSelectedDepts(p=>p.includes(d)?p.filter(x=>x!==d):[...p,d]);
 
@@ -3809,6 +4519,7 @@ function AdminPortal({ employees, setEmployees, allAttendance, leaves, roles, ad
         </header>
         <main className="flex-1 w-full max-w-7xl mx-auto px-4 md:px-6 py-8">
           {page==="dashboard"&&<AdminDashboard employees={employees} allAttendance={allAttendance} leaves={leaves} onCardClick={goToReports} activeDept={activeDept} activeRole={activeRole} quietRefresh={quietRefresh} addToast={addToast}/>}
+          {page==="payroll"&&<AdminPayroll employees={employees} allAttendance={allAttendance} leaves={leaves} addToast={addToast} adminUser={adminUser}/>}
           {page==="employees"&&<AdminEmployees employees={employees} setEmployees={setEmployees} addToast={addToast} onBulkImport={()=>setShowBulk(true)} activeDept={activeDept} activeRole={activeRole} roles={roleOptions} adminUser={adminUser}/>}
           {page==="directory"&&<AdminDirectory employees={employees} activeDept={activeDept}/>}
           {page==="schedules"&&<AdminSchedule employees={employees} setEmployees={setEmployees} addToast={addToast} activeDept={activeDept} isSuperAdmin={isSuperAdmin} reloadData={quietRefresh}/>}
@@ -3914,7 +4625,9 @@ function AppInner() {
     try { await Promise.all([loadEmployees(),loadAttendance(),loadLeaves(),loadRoles()]); } catch{}
   },[loadEmployees,loadAttendance,loadLeaves,loadRoles]);
 
-  useEffect(()=>{ loadData(); },[loadData]);
+  // Only load business data once SOMEONE is signed in (admin, employee, or kiosk).
+  // Loading before login would pull data with no tenant scope applied.
+  useEffect(()=>{ if(adminUser||kioskUser) loadData(); else setDbLoading(false); },[loadData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── 15-hour missing-time-out sweep ────────────────────────────────────────
   // Flags any record with a time-in, no time-out, 15h+ elapsed, and not yet flagged.
@@ -4003,7 +4716,7 @@ function AppInner() {
       const next=typeof updaterOrValue==="function"?updaterOrValue(prev):updaterOrValue;
       const upserts=next.filter(n=>{const old=prev.find(p=>p.id===n.id);return !old||JSON.stringify(old)!==JSON.stringify(n);});
       const deletedIds=prev.filter(p=>!next.find(n=>n.id===p.id)).map(p=>p.id);
-      if (upserts.length>0) supabase.from('employees').upsert(upserts.map(e=>({id:e.id,name:e.name,position:e.position,department:e.department,role:e.role||'Staff',contact:e.contact,qr_code:e.qrCode||null,rfid_uid:e.rfidUid||null,face_descriptors:Array.isArray(e.faceDescriptors)?e.faceDescriptors:[],status:e.status,emp_type:e.empType||'Regular',start_date:e.startDate||null,schedule:e.schedule}))).then(({error})=>{ if(error) addToast('DB sync error: '+error.message,'error'); });
+      if (upserts.length>0) supabase.from('employees').upsert(upserts.map(e=>({id:e.id,name:e.name,position:e.position,department:e.department,role:e.role||'Staff',contact:e.contact,qr_code:e.qrCode||null,rfid_uid:e.rfidUid||null,face_descriptors:Array.isArray(e.faceDescriptors)?e.faceDescriptors:[],status:e.status,emp_type:e.empType||'Regular',start_date:e.startDate||null,schedule:e.schedule,monthly_rate:numOr(e.monthlyRate,0),allowance:numOr(e.allowance,0),sss_no:e.sssNo||null,philhealth_no:e.philhealthNo||null,pagibig_no:e.pagibigNo||null,tin_no:e.tinNo||null}))).then(({error})=>{ if(error) addToast('DB sync error: '+error.message,'error'); });
       if (deletedIds.length>0) supabase.from('employees').delete().in('id',deletedIds).then(({error})=>{ if(error) addToast('DB delete error: '+error.message,'error'); });
       return next;
     });
@@ -4147,8 +4860,9 @@ function AppInner() {
       {screen==="landing"     && <LandingPage onSelect={landingSelect}/>}
       {screen==="register"    && <RegisterPage onBack={(APP_ONLY||ADMIN_ONLY)?undefined:()=>setScreen("landing")} onDone={()=>setScreen("admin-login")} addToast={addToast}/>}
       {screen==="admin-login" && <AdminLogin onLogin={handleLogin} onBack={(APP_ONLY||ADMIN_ONLY)?undefined:()=>setScreen("landing")} onRegister={ADMIN_ONLY?undefined:()=>setScreen("register")}/>}
-      {screen==="admin"       && adminUser && (
-        <AdminPortal employees={employees} setEmployees={setEmployeesAndSync} allAttendance={allAttendance} leaves={leaves} roles={roles} adminUser={adminUser} addToast={addToast} onLogout={handleLogout} reloadData={loadData} quietRefresh={quietRefresh}/>
+      {screen==="admin"       && adminUser && (adminUser.role==='employee'
+        ? <EmployeePortal account={adminUser} onLogout={handleLogout} addToast={addToast}/>
+        : <AdminPortal employees={employees} setEmployees={setEmployeesAndSync} allAttendance={allAttendance} leaves={leaves} roles={roles} adminUser={adminUser} addToast={addToast} onLogout={handleLogout} reloadData={loadData} quietRefresh={quietRefresh}/>
       )}
       {/* Combined kiosk APK: admin login → choose QR / Facial */}
       {screen==="kiosk-login"  && <AdminLogin onLogin={handleKioskLogin}/>}

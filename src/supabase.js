@@ -170,7 +170,7 @@ export const isLiveBackend = !!(SUPA_URL && SUPA_ANON);
 // hard isolation needs server-side auth + RLS per tenant.
 // ─────────────────────────────────────────────────────────────────────────────
 const SENTINEL_TENANT = '00000000-0000-0000-0000-000000000000'; // platform-owned rows (super admin)
-const SCOPED_TABLES = ['employees','attendance','leaves','roles','notifications','audit_log'];
+const SCOPED_TABLES = ['employees','attendance','leaves','roles','notifications','audit_log','payroll_settings','payroll_runs','payslips'];
 
 let TENANT_ID = null;
 export function setTenant(id) { TENANT_ID = id || null; }
@@ -186,7 +186,7 @@ export const supabase = {
     return {
       select: (...a) => { const q = b.select(...a); return tid ? q.eq('tenant_id', tid) : q; },
       insert: (rows) => b.insert(stamp(rows)),
-      upsert: (rows, o) => b.upsert(stamp(rows), o?.onConflict ? { ...o, onConflict: 'tenant_id,' + o.onConflict } : o),
+      upsert: (rows, o) => b.upsert(stamp(rows), o?.onConflict ? { ...o, onConflict: [...new Set(['tenant_id', ...o.onConflict.split(',')])].join(',') } : o),
       update: (v) => { const q = b.update(v); return tid ? q.eq('tenant_id', tid) : q; },
       delete: () => { const q = b.delete(); return tid ? q.eq('tenant_id', tid) : q; },
     };

@@ -11,3 +11,5 @@ dist-admin
 
 # Private keys folder — never uploaded to GitHub
 secrets/
+
+.env*.local

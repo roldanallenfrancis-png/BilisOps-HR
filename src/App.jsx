@@ -1536,7 +1536,12 @@ function RfidKiosk({ employees, allAttendance, onBack }) {
 // QR kiosk uses. A manual-ID fallback stays available (face not enrolled, bad
 // lighting, camera trouble). Faces are matched against enrolled 128-D descriptors.
 // ════════════════════════════════════════════════════════════════════════════
-function FacialKiosk({ employees, allAttendance, onScan, onBack, onKioskLogout }) {
+// Device-level kiosk preferences (per tablet, stored locally)
+const KIOSK_PREFS_KEY='bilisops_kiosk_prefs';
+const loadKioskPrefs=()=>{ try{ return {autoStandby:true,idleSecs:60,...JSON.parse(localStorage.getItem(KIOSK_PREFS_KEY)||'{}')}; }catch{ return {autoStandby:true,idleSecs:60}; } };
+const saveKioskPrefs=p=>{ try{ localStorage.setItem(KIOSK_PREFS_KEY,JSON.stringify(p)); }catch{} };
+
+function FacialKiosk({ employees, allAttendance, onScan, onBack, onKioskLogout, quietRefresh, addToast }) {
   const [clock,setClock]=useState(nowDate());
   const [log,setLog]=useState([]);
   const [scanning,setScan]=useState(false);
@@ -1553,6 +1558,31 @@ function FacialKiosk({ employees, allAttendance, onScan, onBack, onKioskLogout }
   const lastScanRef=useRef({});
   const stableRef=useRef({id:null,count:0}); // consecutive-match counter before a scan fires
   const busyRef=useRef(false); // one detection in flight at a time
+  // ── Standby: after idleSecs with no face, dim to a screensaver; the camera keeps
+  // watching at a slow tick and WAKES the kiosk the moment a face appears. ──────
+  const [standby,setStandby]=useState(false);
+  const [prefs,setPrefs]=useState(loadKioskPrefs());
+  const standbyRef=useRef(false); useEffect(()=>{ standbyRef.current=standby; },[standby]);
+  const prefsRef=useRef(prefs);   useEffect(()=>{ prefsRef.current=prefs; },[prefs]);
+  const lastFaceRef=useRef(Date.now());
+  const tickRef=useRef(0);
+  // ── Kiosk settings (⚙): standby prefs + on-device face enrollment ───────────
+  const [showSettings,setShowSettings]=useState(false);
+  const [enrollEmp,setEnrollEmp]=useState(null); const [enrollSaving,setEnrollSaving]=useState(false);
+  const camWasOnRef=useRef(false);
+  const openSettings=()=>{ camWasOnRef.current=camOn; if(camOn) stopCam(); setShowSettings(true); };
+  const closeSettings=()=>{ setShowSettings(false); setEnrollEmp(null); if(camWasOnRef.current) startCam(); };
+  const savePrefs=p=>{ setPrefs(p); saveKioskPrefs(p); };
+  const saveEnrollment=async(desc)=>{
+    if(!enrollEmp) return;
+    setEnrollSaving(true);
+    const {error}=await supabase.from('employees').update({face_descriptors:desc}).eq('id',enrollEmp.id);
+    setEnrollSaving(false);
+    if(error){ addToast?.("Failed to save: "+error.message,"error"); return; }
+    setEnrollEmp(e=>({...e,faceDescriptors:desc}));
+    addToast?.(`Face saved for ${enrollEmp.name} (${desc.length} sample${desc.length===1?"":"s"}).`,"success");
+    quietRefresh?.();
+  };
 
   useEffect(()=>{ const t=setInterval(()=>setClock(nowDate()),1000); return ()=>clearInterval(t); },[]);
   useEffect(()=>{
@@ -1627,11 +1657,22 @@ function FacialKiosk({ employees, allAttendance, onScan, onBack, onKioskLogout }
       await loadFaceModels();
       let s; try{s=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"}});}catch{s=await navigator.mediaDevices.getUserMedia({video:true});}
       streamRef.current=s; setCamOn(true); setFaceState("scanning");
+      lastFaceRef.current=Date.now();
       detectRef.current=setInterval(async()=>{
         if(!vidRef.current||vidRef.current.readyState<2||busyRef.current) return;
+        // In standby, only check every 4th tick (~2.8s) — enough to catch a person
+        // stepping up, cheap enough to run all day.
+        if(standbyRef.current){ tickRef.current=(tickRef.current+1)%4; if(tickRef.current!==0) return; }
         busyRef.current=true;
         try {
           const det=await detectFace(vidRef.current);
+          if (det) {
+            lastFaceRef.current=Date.now();
+            if (standbyRef.current) { setStandby(false); return; } // face detected → wake up
+          } else if (!standbyRef.current && prefsRef.current.autoStandby
+                     && Date.now()-lastFaceRef.current > prefsRef.current.idleSecs*1000) {
+            setStandby(true); setSeen(null); stableRef.current={id:null,count:0}; return; // idle → sleep
+          }
           if (!det) { setSeen(null); stableRef.current={id:null,count:0}; return; }
           if (!matcherRef.current) { setSeen({unknown:true}); return; }
           const best=matcherRef.current.findBestMatch(det.descriptor);
@@ -1679,10 +1720,56 @@ function FacialKiosk({ employees, allAttendance, onScan, onBack, onKioskLogout }
           <div className="text-gray-400 text-[9px] sm:text-xs mt-0.5 hidden xs:block">{clock.toLocaleDateString("en-PH",{weekday:"short",month:"short",day:"numeric",timeZone:PH_TZ})} · PH time</div>
         </div>
         <div className="flex items-center gap-2">
+          <button onClick={openSettings} title="Kiosk settings" className="border border-gray-200 hover:border-brand-300 text-gray-400 hover:text-brand-700 text-xs font-semibold px-3 sm:px-4 py-2 rounded-xl transition-colors"><Icon name="settings" className="w-4 h-4"/></button>
           <button onClick={onKioskLogout} title="Log out this kiosk" className="border border-gray-200 hover:border-gray-300 text-gray-400 hover:text-gray-900 text-xs font-semibold px-3 sm:px-4 py-2 rounded-xl transition-colors"><Icon name="logout" className="w-4 h-4"/></button>
           <button onClick={onBack} className="border border-gray-200 hover:border-gray-300 text-gray-400 hover:text-gray-900 text-xs font-semibold px-3 sm:px-4 py-2 rounded-xl transition-colors">←</button>
         </div>
       </header>
+      {/* Standby screensaver — the camera keeps watching; a detected face (or a tap) wakes it */}
+      {standby&&(
+        <div onClick={()=>{setStandby(false);lastFaceRef.current=Date.now();}} className="fixed inset-0 z-40 bg-slate-950/95 flex flex-col items-center justify-center gap-6 cursor-pointer">
+          <div className="float-y"><BrandMark className="w-24 h-24 rounded-3xl glow-brand"/></div>
+          <div className="text-white text-2xl font-black tabular-nums">{clock.toLocaleTimeString("en-PH",{hour:"2-digit",minute:"2-digit",timeZone:PH_TZ})}</div>
+          <div className="text-white/50 text-sm font-semibold animate-pulse">Step in front of the camera to check in</div>
+        </div>
+      )}
+      {/* Kiosk settings modal */}
+      {showSettings&&(
+        <div className="fixed inset-0 bg-slate-900/25 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={closeSettings}>
+          <div className="bg-white rounded-3xl w-full max-w-lg max-h-[88vh] overflow-y-auto shadow-2xl p-7" onClick={e=>e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-black text-ink flex items-center gap-2"><Icon name="settings" className="w-5 h-5 text-brand-600"/> Kiosk settings</h2>
+              <button onClick={closeSettings} className="w-9 h-9 rounded-lg hover:bg-gray-100 text-gray-400">✕</button>
+            </div>
+            {/* Standby */}
+            <div className="border border-gray-100 rounded-2xl p-4 mb-4">
+              <h3 className="font-bold text-gray-800 text-sm mb-2">Standby mode</h3>
+              <label className="flex items-center gap-2 text-sm text-gray-700 mb-3">
+                <input type="checkbox" checked={prefs.autoStandby} onChange={e=>savePrefs({...prefs,autoStandby:e.target.checked})} className="accent-brand-600 w-4 h-4"/>
+                Dim to screensaver when no face is seen — wakes automatically when someone steps up
+              </label>
+              <div className="flex items-center gap-2 text-sm text-gray-600">
+                Sleep after <input type="number" min="10" value={prefs.idleSecs} onChange={e=>savePrefs({...prefs,idleSecs:Math.max(10,Number(e.target.value)||60)})} className="w-20 border border-gray-200 rounded-lg px-2 py-1.5 text-sm"/> seconds idle
+              </div>
+            </div>
+            {/* Face enrollment */}
+            <div className="border border-gray-100 rounded-2xl p-4">
+              <h3 className="font-bold text-gray-800 text-sm mb-1">Register a face</h3>
+              <p className="text-xs text-gray-400 mb-3">Enroll or update an employee's face right here on the kiosk. Capture 3+ samples for reliable matching.</p>
+              <select value={enrollEmp?.id||""} onChange={e=>setEnrollEmp(employees.find(x=>x.id===e.target.value)||null)} className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm mb-3">
+                <option value="">Select an employee…</option>
+                {employees.filter(e=>e.status==="active").map(e=><option key={e.id} value={e.id}>{e.name} ({e.id}){e.faceDescriptors?.length?` — ${e.faceDescriptors.length} sample(s)`:""}</option>)}
+              </select>
+              {enrollEmp&&(
+                <div>
+                  {enrollSaving&&<div className="text-xs text-brand-600 font-bold mb-2">Saving…</div>}
+                  <FaceEnroll key={enrollEmp.id} value={enrollEmp.faceDescriptors||[]} onChange={saveEnrollment}/>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       <div className="flex-1 flex flex-col md:flex-row overflow-y-auto md:overflow-hidden">
         <div className="flex-1 flex flex-col items-center justify-center p-4 sm:p-8 gap-4 sm:gap-5 relative min-h-[60vh] md:min-h-0">
           {result&&(
@@ -4870,7 +4957,7 @@ function AppInner() {
       {screen==="kiosk"       && !kioskUser && <AdminLogin onLogin={handleKioskLogin} onBack={kioskBack}/>}
       {screen==="kiosk"       && kioskUser  && <EmployeeKiosk employees={employees} allAttendance={allAttendance} onScan={handleScan} onBack={kioskBack} onKioskLogout={handleKioskLogout}/>}
       {screen==="facial-kiosk" && !kioskUser && <AdminLogin onLogin={handleKioskLogin} onBack={kioskBack}/>}
-      {screen==="facial-kiosk" && kioskUser  && <FacialKiosk employees={employees} allAttendance={allAttendance} onScan={handleScan} onBack={kioskBack} onKioskLogout={handleKioskLogout}/>}
+      {screen==="facial-kiosk" && kioskUser  && <FacialKiosk employees={employees} allAttendance={allAttendance} onScan={handleScan} onBack={kioskBack} onKioskLogout={handleKioskLogout} quietRefresh={quietRefresh} addToast={addToast}/>}
     </div>
   );
 }

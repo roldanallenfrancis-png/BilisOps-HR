@@ -4359,7 +4359,24 @@ function AdminAuditLog({ addToast, roles }) {
     <div className="space-y-5">
       <div>
         <h1 className="text-2xl font-black text-gray-900">⚙️ Settings</h1>
-        <p className="text-sm text-gray-500 mt-0.5">Manage roles and review the audit trail. Super-admin only.</p>
+        <p className="text-sm text-gray-500 mt-0.5">Manage roles, download the kiosk app, and review the audit trail. Super-admin only.</p>
+      </div>
+
+      {/* Kiosk app download — scan with the tablet to install the QR + Facial kiosk APK */}
+      <div className="bg-white rounded-3xl border border-gray-100 shadow-sm p-6">
+        <h2 className="font-bold text-gray-800 mb-1">Kiosk App (Android)</h2>
+        <p className="text-xs text-gray-400 mb-4">One app, both kiosks — after installing, sign in and choose <b>QR Code Kiosk</b> or <b>Facial Kiosk</b>. Scan the QR with the tablet's camera to download, then open the file to install (allow "install from unknown sources").</p>
+        <div className="flex flex-col sm:flex-row items-center gap-6">
+          <div className="bg-white border-2 border-brand-200 rounded-2xl p-3 shadow-sm">
+            <RealQRCode value={`${window.location.origin}/BilisOps-Kiosk.apk`} size={168}/>
+          </div>
+          <div className="space-y-2 text-center sm:text-left">
+            <div className="text-sm font-bold text-ink">BilisOps Kiosk</div>
+            <div className="text-xs text-gray-400 font-mono break-all">{window.location.origin}/BilisOps-Kiosk.apk</div>
+            <a href="/BilisOps-Kiosk.apk" download className="inline-flex items-center gap-2 bg-brand-500 text-white text-sm font-bold px-5 py-2.5 rounded-xl hover:bg-brand-600 transition-colors shadow-brand">↓ Download APK</a>
+            <p className="text-xs text-gray-400">Works offline-first — scans queue up and sync when the tablet reconnects.</p>
+          </div>
+        </div>
       </div>
 
       <div className="bg-white rounded-3xl border border-gray-100 shadow-sm p-6">

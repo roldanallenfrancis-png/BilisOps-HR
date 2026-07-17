@@ -13,3 +13,4 @@ dist-admin
 secrets/
 
 .env*.local
+!public/BilisOps-Kiosk.apk

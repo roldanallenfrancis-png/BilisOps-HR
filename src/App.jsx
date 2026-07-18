@@ -496,6 +496,9 @@ const modulesOf = m =>
   m === 'Payroll'    ? ['payroll']    :
   m === 'Directory'  ? ['directory']  : ALL_MODULES;
 const hasMod = (user, m) => !user?.modules || user.modules.includes(m);
+// Admin pages an account can be granted (page_access). null = all pages.
+const PAGE_OPTIONS=[["dashboard","Dashboard"],["employees","Employees"],["directory","Directory"],["schedules","Schedules"],["leaves","Leave"],["manpower","Manpower"],["behavior","Behavior"],["reports","Reports"],["payroll","Payroll"]];
+const canPage = (user, k) => !user?.pageAccess || user.pageAccess.includes(k);
 
 // Brand mark — green rounded square with a white lightning bolt (inverted = white tile, green bolt).
 function BrandMark({ className="w-10 h-10 rounded-2xl", inverted=false }) {
@@ -1037,7 +1040,7 @@ function AdminLogin({ onLogin, onBack, onRegister }) {
         const {data:reg}=await supabase.from('registrations').select('module').eq('id',data.tenant_id).maybeSingle();
         modules=modulesOf(reg?.module);
       }
-      const user={id:data.id,username:data.username,role:data.role,departmentAccess:data.department_access||null,tenantId:data.tenant_id||null,employeeId:data.employee_id||null,modules,loginTime:new Date().toLocaleTimeString("en-PH")};
+      const user={id:data.id,username:data.username,role:data.role,departmentAccess:data.department_access||null,tenantId:data.tenant_id||null,employeeId:data.employee_id||null,pageAccess:Array.isArray(data.page_access)&&data.page_access.length?data.page_access:null,modules,loginTime:new Date().toLocaleTimeString("en-PH")};
       onLogin(user);
     } catch(e) { setErr("Login failed: "+e.message); setLoading(false); }
   };
@@ -1054,7 +1057,7 @@ function AdminLogin({ onLogin, onBack, onRegister }) {
         const {data:reg}=await supabase.from('registrations').select('module').eq('id',mustChange.tenant_id).maybeSingle();
         modules=modulesOf(reg?.module);
       }
-      const user={id:mustChange.id,username:mustChange.username,role:mustChange.role,departmentAccess:mustChange.department_access||null,tenantId:mustChange.tenant_id||null,employeeId:mustChange.employee_id||null,modules,loginTime:new Date().toLocaleTimeString("en-PH")};
+      const user={id:mustChange.id,username:mustChange.username,role:mustChange.role,departmentAccess:mustChange.department_access||null,tenantId:mustChange.tenant_id||null,employeeId:mustChange.employee_id||null,pageAccess:Array.isArray(mustChange.page_access)&&mustChange.page_access.length?mustChange.page_access:null,modules,loginTime:new Date().toLocaleTimeString("en-PH")};
       onLogin(user);
     } catch(e) { setErr("Failed: "+e.message); setLoading(false); }
   };
@@ -3816,12 +3819,12 @@ function AdminRegistrations({ adminUser, addToast }) {
 function AdminAccounts({ adminUser, addToast, allDepartments }) {
   const [accounts,setAccounts]=useState([]); const [loading,setLoading]=useState(true);
   const [modal,setModal]=useState(false); const [selected,setSelected]=useState(null);
-  const [form,setForm]=useState({username:"",password:"",role:"admin",department_access:[]});
+  const [form,setForm]=useState({username:"",password:"",role:"admin",department_access:[],page_access:[]});
   const [pwForm,setPwForm]=useState({current:"",next:"",confirm:""});
   const [showPw,setShowPw]=useState({}); const [confirmDel,setConfirmDel]=useState(null);
   const isSuperAdmin=adminUser.role==="super_admin";
 
-  const load=async()=>{ setLoading(true); let {data,error}=await supabase.from('admin_accounts').select('id,username,role,is_active,last_login,created_at,department_access,tenant_id').order('created_at'); if(error) ({data}=await supabase.from('admin_accounts').select('id,username,role,is_active,last_login,created_at,department_access').order('created_at')); setAccounts(data||[]); setLoading(false); };
+  const load=async()=>{ setLoading(true); let {data,error}=await supabase.from('admin_accounts').select('id,username,role,is_active,last_login,created_at,department_access,tenant_id,page_access').order('created_at'); if(error) ({data}=await supabase.from('admin_accounts').select('id,username,role,is_active,last_login,created_at,department_access').order('created_at')); setAccounts(data||[]); setLoading(false); };
   useEffect(()=>{ load(); },[]);
 
   const toggleDept=d=>setForm(f=>({...f,department_access:f.department_access.includes(d)?f.department_access.filter(x=>x!==d):[...f.department_access,d]}));
@@ -3830,12 +3833,18 @@ function AdminAccounts({ adminUser, addToast, allDepartments }) {
     if (!form.username){addToast("Username is required.","error");return;}
     if (modal==="add"&&!form.password){addToast("Password is required.","error");return;}
     const deptAccess=form.role==="super_admin"?null:(form.department_access.length>0?form.department_access:null);
+    // Page access: empty selection = full access (null). Super admins always get everything.
+    const pageAccess=form.role==="super_admin"?null:(form.page_access.length>0&&form.page_access.length<PAGE_OPTIONS.length?form.page_access:null);
     if (modal==="add") {
-      const{error}=await supabase.from('admin_accounts').insert({username:form.username.trim(),password_hash:btoa(form.password),role:form.role,department_access:deptAccess,is_active:true,must_change_password:true});
+      const row={username:form.username.trim(),password_hash:btoa(form.password),role:form.role,department_access:deptAccess,is_active:true,must_change_password:true};
+      let {error}=await supabase.from('admin_accounts').insert({...row,page_access:pageAccess});
+      if(error&&/page_access/.test(error.message)) ({error}=await supabase.from('admin_accounts').insert(row));
       if(error){addToast("Error: "+(error.message.includes("unique")?"Username already exists.":error.message),"error");return;}
       addToast(`Account "${form.username}" created.`,"success");
     } else {
-      const{error}=await supabase.from('admin_accounts').update({username:form.username.trim(),role:form.role,department_access:deptAccess}).eq('id',selected.id);
+      const row={username:form.username.trim(),role:form.role,department_access:deptAccess};
+      let {error}=await supabase.from('admin_accounts').update({...row,page_access:pageAccess}).eq('id',selected.id);
+      if(error&&/page_access/.test(error.message)) ({error}=await supabase.from('admin_accounts').update(row).eq('id',selected.id));
       if(error){addToast("Error: "+error.message,"error");return;}
       addToast("Account updated.","success");
     }
@@ -3876,7 +3885,7 @@ function AdminAccounts({ adminUser, addToast, allDepartments }) {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div><h1 className="text-2xl font-black text-gray-900">Admin Accounts</h1><p className="text-sm text-gray-500 mt-0.5">Manage who can log in to this portal</p></div>
-        <button onClick={()=>{setForm({username:"",password:"",role:"admin",department_access:[]});setModal("add");}} className="bg-brand-500 text-white text-sm font-bold px-5 py-2.5 rounded-xl hover:bg-brand-600 active:scale-95">+ Add Account</button>
+        <button onClick={()=>{setForm({username:"",password:"",role:"admin",department_access:[],page_access:[]});setModal("add");}} className="bg-brand-500 text-white text-sm font-bold px-5 py-2.5 rounded-xl hover:bg-brand-600 active:scale-95">+ Add Account</button>
       </div>
       <div className="bg-brand-50 border border-brand-200 rounded-3xl p-5 flex items-center justify-between flex-wrap gap-3">
         <div>
@@ -3885,7 +3894,7 @@ function AdminAccounts({ adminUser, addToast, allDepartments }) {
           <div className="text-xs text-gray-500 mt-0.5 capitalize">{adminUser.role.replace("_"," ")} · Since {adminUser.loginTime}</div>
         </div>
         <div className="flex gap-2">
-          <button onClick={()=>{const me=accounts.find(a=>a.id===adminUser.id);setSelected(me);setForm({username:me?.username||"",password:"",role:me?.role||"admin",department_access:me?.department_access||[]});setModal("edit");}} className="px-4 py-2 bg-white border border-brand-200 text-brand-700 text-xs font-bold rounded-xl hover:bg-brand-100">Edit Username</button>
+          <button onClick={()=>{const me=accounts.find(a=>a.id===adminUser.id);setSelected(me);setForm({username:me?.username||"",password:"",role:me?.role||"admin",department_access:me?.department_access||[],page_access:me?.page_access||[]});setModal("edit");}} className="px-4 py-2 bg-white border border-brand-200 text-brand-700 text-xs font-bold rounded-xl hover:bg-brand-100">Edit Username</button>
           <button onClick={()=>{setSelected(accounts.find(a=>a.id===adminUser.id));setPwForm({current:"",next:"",confirm:""});setModal("password");}} className="px-4 py-2 bg-brand-700 text-white text-xs font-bold rounded-xl hover:bg-brand-600">Change Password</button>
         </div>
       </div>
@@ -3943,6 +3952,19 @@ function AdminAccounts({ adminUser, addToast, allDepartments }) {
                     ))}
                   </div>
                   {form.department_access.length>0&&<p className="text-xs text-brand-600 mt-2 font-medium">Access: {form.department_access.join(", ")}</p>}
+                </div>
+              )}
+              {form.role==="admin"&&(
+                <div>
+                  <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Page Access</label>
+                  <p className="text-xs text-gray-400 mb-2">Pick which pages this account can open. Leave all unchecked = every page their plan allows.</p>
+                  <div className="flex flex-wrap gap-2">
+                    {PAGE_OPTIONS.map(([k,l])=>(
+                      <button key={k} type="button" onClick={()=>setForm(f=>({...f,page_access:f.page_access.includes(k)?f.page_access.filter(x=>x!==k):[...f.page_access,k]}))}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors ${form.page_access.includes(k)?"bg-brand-500 text-white border-brand-500":"bg-gray-50 text-gray-600 border-gray-200 hover:border-slate-400"}`}>{l}</button>
+                    ))}
+                  </div>
+                  {form.page_access.length>0&&<p className="text-xs text-brand-600 mt-2 font-medium">Can open: {form.page_access.map(k=>(PAGE_OPTIONS.find(([x])=>x===k)||[])[1]).join(", ")}</p>}
                 </div>
               )}
               {form.role==="super_admin"&&<p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">Super Admin has full access to all departments and settings.</p>}
@@ -4666,9 +4688,9 @@ function AdminPortal({ employees, setEmployees, allAttendance, leaves, roles, ad
   // Land on the page that matches the tenant's plan (admin domain → Registrations).
   const [page,setPage]=useState(
     ADMIN_ONLY ? "registrations" :
-    hasMod(adminUser,'attendance') ? "dashboard" :
-    hasMod(adminUser,'payroll') ? "payroll" :
-    hasMod(adminUser,'directory') ? "directory" : "employees"
+    (PAGE_OPTIONS.map(([k])=>k).find(k=>canPage(adminUser,k)&&(
+      k==="employees"||k==="directory"&&hasMod(adminUser,'directory')||k==="payroll"&&hasMod(adminUser,'payroll')||["dashboard","schedules","leaves","manpower","behavior","reports"].includes(k)&&hasMod(adminUser,'attendance')
+    ))||"employees")
   ); const [reportFilter,setRF]=useState("all"); const [reportRange,setReportRange]=useState(null); const [showBulk,setShowBulk]=useState(false);
   const [hovered,setHovered]=useState(false);
   const logoTaps=useRef(0); const logoTimer=useRef(null);
@@ -4732,7 +4754,7 @@ function AdminPortal({ employees, setEmployees, allAttendance, leaves, roles, ad
     {k:"audit",    l:"Settings", icon:"settings",superOnly:true},
   ];
   const goToReports=(status,from,to)=>{setRF(status);setReportRange({from,to,n:(reportRange?.n||0)+1});setPage("reports");};
-  const nav=NAV.filter(n=>(!n.superOnly||isSuperAdmin)&&(!n.mod||hasMod(adminUser,n.mod)));
+  const nav=NAV.filter(n=>(!n.superOnly||isSuperAdmin)&&(!n.mod||hasMod(adminUser,n.mod))&&(n.superOnly||canPage(adminUser,n.k)));
   const go=k=>{ if(k==="reports"){ setRF("all"); setReportRange(null); } setPage(k); setMobileOpen(false); quietRefresh?.(); };
   const toggleDept=d=>setSelectedDepts(p=>p.includes(d)?p.filter(x=>x!==d):[...p,d]);
 

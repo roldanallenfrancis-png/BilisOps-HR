@@ -7,6 +7,9 @@
 -- Employee portal logins: link an account to an employee record
 alter table admin_accounts add column if not exists employee_id text;
 
+-- Per-account page access (null = all pages the tenant's plan allows)
+alter table admin_accounts add column if not exists page_access jsonb;
+
 -- Employee pay setup (used by Payroll)
 alter table employees add column if not exists monthly_rate   numeric default 0;
 alter table employees add column if not exists allowance      numeric default 0;   -- non-taxable allowance per month

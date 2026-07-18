@@ -124,6 +124,7 @@ create table if not exists admin_accounts (
   must_change_password boolean default false,
   tenant_id            uuid,                          -- the business this login belongs to (null = platform super admin)
   employee_id          text,                          -- set for employee portal logins (role = 'employee')
+  page_access          jsonb,                         -- null = all pages; else array of allowed page keys
   last_login           timestamptz,
   created_at           timestamptz default now()
 );

@@ -28,6 +28,8 @@ create table if not exists employees (
   philhealth_no    text,
   pagibig_no       text,
   tin_no           text,
+  bank_name        text,
+  bank_account     text,
   created_at       timestamptz default now(),
   primary key (tenant_id, id)
 );

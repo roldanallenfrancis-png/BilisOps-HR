@@ -6,7 +6,13 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ── 2026 legal defaults (verified July 2026) ─────────────────────────────────
+// ratesVersion: bump this whenever the statutory sections below change (new
+// government rates, new holiday list). Tenants whose saved settings carry an
+// older version see an "updated rates available" banner and can apply the new
+// statutory tables with one click — their own customizations are kept.
 export const PH_PAYROLL_DEFAULTS = {
+  ratesVersion: '2026.1',
+
   // Pay basis
   payFrequency: 'semi-monthly',      // 'semi-monthly' | 'monthly'
   workDaysPerMonth: 26,              // divisor for daily rate  (companies use 26, 22, 21.75…)
@@ -95,6 +101,9 @@ export function mergeSettings(saved) {
   if (!saved) return JSON.parse(JSON.stringify(d));
   return {
     ...d, ...saved,
+    // Settings saved before versioning existed count as outdated ('0') so the
+    // rates-update banner shows once and stamps them on apply.
+    ratesVersion: saved.ratesVersion || '0',
     sss: { ...d.sss, ...(saved.sss||{}) },
     philhealth: { ...d.philhealth, ...(saved.philhealth||{}) },
     pagibig: { ...d.pagibig, ...(saved.pagibig||{}) },
@@ -102,6 +111,24 @@ export function mergeSettings(saved) {
     deductions: { ...d.deductions, ...(saved.deductions||{}) },
     taxBrackets: saved.taxBrackets?.length ? saved.taxBrackets : d.taxBrackets,
     holidays: saved.holidays?.length ? saved.holidays : d.holidays,
+  };
+}
+
+// Overwrite ONLY the statutory sections with the platform's current tables,
+// keeping every tenant customization (pay basis, premiums, toggles, extra
+// holidays they added that aren't in the standard list).
+export function applyStatutoryUpdate(settings) {
+  const d = PH_PAYROLL_DEFAULTS;
+  const stdDates = new Set(d.holidays.map(h => h.date));
+  const customHolidays = (settings.holidays || []).filter(h => !stdDates.has(h.date));
+  return {
+    ...settings,
+    ratesVersion: d.ratesVersion,
+    sss: { ...d.sss },
+    philhealth: { ...d.philhealth },
+    pagibig: { ...d.pagibig },
+    taxBrackets: JSON.parse(JSON.stringify(d.taxBrackets)),
+    holidays: [...JSON.parse(JSON.stringify(d.holidays)), ...customHolidays],
   };
 }
 

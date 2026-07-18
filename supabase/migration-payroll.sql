@@ -14,6 +14,8 @@ alter table employees add column if not exists sss_no         text;
 alter table employees add column if not exists philhealth_no  text;
 alter table employees add column if not exists pagibig_no     text;
 alter table employees add column if not exists tin_no         text;
+alter table employees add column if not exists bank_name      text;   -- for payroll disbursement files
+alter table employees add column if not exists bank_account   text;
 
 -- Leave approvals + offset requests (employees file, admins approve)
 alter table leaves add column if not exists status       text default 'approved';  -- pending | approved | rejected

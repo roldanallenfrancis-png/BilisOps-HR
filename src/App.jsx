@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, Component } from "react";
 import { supabase, setTenant, getTenant } from './supabase.js';
-import { PH_PAYROLL_DEFAULTS, mergeSettings, computePayslip, computeSSS, computePhilHealth, computePagibig, peso } from './payroll.js';
+import { PH_PAYROLL_DEFAULTS, mergeSettings, applyStatutoryUpdate, computePayslip, computeSSS, computePhilHealth, computePagibig, peso } from './payroll.js';
 import { FaceEnroll } from './FaceEnroll.jsx';
 import { loadFaceModels, detectFace, buildMatcher, MATCH_THRESHOLD } from './face.js';
 
@@ -288,7 +288,7 @@ function rowToEmp(row) {
     restDays:      Array.isArray(s.restDays) ? s.restDays : DEFAULT_SCHEDULE.restDays,
   };
   return { id:row.id, name:row.name, position:row.position, department:row.department, role:row.role||'Staff', contact:row.contact||'', qrCode:row.qr_code||'', rfidUid:row.rfid_uid||'', faceDescriptors:Array.isArray(row.face_descriptors)?row.face_descriptors:[], status:row.status, empType:row.emp_type||'Regular', createdAt:row.created_at?String(row.created_at).slice(0,10):null, startDate:row.start_date?String(row.start_date).slice(0,10):null, schedule,
-    monthlyRate:Number(row.monthly_rate)||0, allowance:Number(row.allowance)||0, sssNo:row.sss_no||'', philhealthNo:row.philhealth_no||'', pagibigNo:row.pagibig_no||'', tinNo:row.tin_no||'' };
+    monthlyRate:Number(row.monthly_rate)||0, allowance:Number(row.allowance)||0, sssNo:row.sss_no||'', philhealthNo:row.philhealth_no||'', pagibigNo:row.pagibig_no||'', tinNo:row.tin_no||'', bankName:row.bank_name||'', bankAccount:row.bank_account||'' };
 }
 function rowToAttRec(row) {
   return {
@@ -2184,12 +2184,18 @@ function AdminDashboard({ employees, allAttendance, leaves, onCardClick, activeD
 function AdminEmployees({ employees, setEmployees, addToast, onBulkImport, activeDept, activeRole, roles:managedRoles, adminUser }) {
   const [search,setSearch]=useState(""); const [deptFilter,setDept]=useState("all"); const [roleFilter,setRoleFilter]=useState("all"); const [statusFilter,setStF]=useState("all");
   const [modal,setModal]=useState(false); const [selected,setSelected]=useState(null); const [tab,setTab]=useState("info");
-  const [form,setForm]=useState({id:"",name:"",position:"",department:"",role:"Staff",contact:"",qrCode:"",rfidUid:"",faceDescriptors:[],status:"active",empType:"Regular",monthlyRate:0,allowance:0,sssNo:"",philhealthNo:"",pagibigNo:"",tinNo:"",schedule:{...DEFAULT_SCHEDULE}});
+  const [form,setForm]=useState({id:"",name:"",position:"",department:"",role:"Staff",contact:"",qrCode:"",rfidUid:"",faceDescriptors:[],status:"active",empType:"Regular",monthlyRate:0,allowance:0,sssNo:"",philhealthNo:"",pagibigNo:"",tinNo:"",bankName:"",bankAccount:"",schedule:{...DEFAULT_SCHEDULE}});
   const [schedForm,setSchedForm]=useState({...DEFAULT_SCHEDULE});
   const [confirmDeact,setConfirmDeact]=useState(null); const [confirmDelete,setConfirmDelete]=useState(null);
   const [selIds,setSelIds]=useState([]); const [confirmBulkDel,setConfirmBulkDel]=useState(false); // bulk delete
   const [openMenu,setOpenMenu]=useState(null); // employee id whose action menu is open
   const [qrModal,setQrModal]=useState(false); const [qrSel,setQrSel]=useState([]);
+  // HR document generator (COE / NTE / Contract)
+  const [docEmp,setDocEmp]=useState(null);
+  const [docForm,setDocForm]=useState({type:'coe',purpose:'',incidentDate:'',details:'',signatory:'',signatoryTitle:'HR Manager'});
+  const [docCompany,setDocCompany]=useState('');
+  const openDocs=async emp=>{ setDocEmp(emp); if(!docCompany&&adminUser?.tenantId){ const {data}=await supabase.from('registrations').select('company').eq('id',adminUser.tenantId).maybeSingle(); setDocCompany(data?.company||''); } };
+  const printDoc=()=>{ printDocument(docForm.type, docEmp, docCompany, docForm); logAudit(adminUser,'document_generated',docEmp.name,docForm.type.toUpperCase()); };
   // Employee portal login management
   const [portalEmp,setPortalEmp]=useState(null); const [portalAcc,setPortalAcc]=useState(null);
   const [portalForm,setPortalForm]=useState({email:"",password:""}); const [portalBusy,setPortalBusy]=useState(false);
@@ -2232,7 +2238,7 @@ function AdminEmployees({ employees, setEmployees, addToast, onBulkImport, activ
     return mq&&deptMatch(activeDept,e.department)&&(deptFilter==="all"||e.department===deptFilter)&&(!activeRole||activeRole==="all"||(e.role||"Staff")===activeRole)&&(roleFilter==="all"||(e.role||"Staff")===roleFilter)&&(statusFilter==="all"||e.status===statusFilter);
   });
 
-  const openAdd=()=>{setForm({id:`EMP${String(employees.length+1).padStart(3,"0")}`,name:"",position:"",department:(typeof activeDept==="string"&&activeDept!=="all")?activeDept:"",role:"Staff",contact:"",qrCode:"",rfidUid:"",faceDescriptors:[],status:"active",empType:"Regular",monthlyRate:0,allowance:0,sssNo:"",philhealthNo:"",pagibigNo:"",tinNo:"",schedule:{...DEFAULT_SCHEDULE}});setTab("info");setModal("add");};
+  const openAdd=()=>{setForm({id:`EMP${String(employees.length+1).padStart(3,"0")}`,name:"",position:"",department:(typeof activeDept==="string"&&activeDept!=="all")?activeDept:"",role:"Staff",contact:"",qrCode:"",rfidUid:"",faceDescriptors:[],status:"active",empType:"Regular",monthlyRate:0,allowance:0,sssNo:"",philhealthNo:"",pagibigNo:"",tinNo:"",bankName:"",bankAccount:"",schedule:{...DEFAULT_SCHEDULE}});setTab("info");setModal("add");};
   const openEdit=emp=>{setSelected(emp);setForm({...emp,schedule:{...emp.schedule}});setTab("info");setModal("edit");};
   const openSchedule=emp=>{setSelected(emp);setSchedForm({...emp.schedule});setModal("schedule");};
   const openQR=emp=>{setSelected(emp);setModal("qr");};
@@ -2330,6 +2336,7 @@ function AdminEmployees({ employees, setEmployees, addToast, onBulkImport, activ
                           <button onClick={()=>{setOpenMenu(null);openSchedule(emp);}} className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-brand-50 flex items-center gap-2.5"><Icon name="schedules" className="w-4 h-4 text-gray-400"/> Schedule</button>
                           <button onClick={()=>{setOpenMenu(null);openQR(emp);}} className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-brand-50 flex items-center gap-2.5"><Icon name="qr" className="w-4 h-4 text-gray-400"/> QR Code</button>
                           <button onClick={()=>{setOpenMenu(null);openPortal(emp);}} className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-brand-50 flex items-center gap-2.5"><Icon name="accounts" className="w-4 h-4 text-gray-400"/> Portal Login</button>
+                          <button onClick={()=>{setOpenMenu(null);openDocs(emp);}} className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-brand-50 flex items-center gap-2.5"><Icon name="reports" className="w-4 h-4 text-gray-400"/> Documents</button>
                           <button onClick={()=>{setOpenMenu(null);setConfirmDeact(emp);}} className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-brand-50 flex items-center gap-2.5"><Icon name={emp.status==="active"?"pause":"play"} className="w-4 h-4 text-gray-400"/> {emp.status==="active"?"Deactivate":"Reactivate"}</button>
                           <div className="border-t border-gray-100 my-1"/>
                           <button onClick={()=>{setOpenMenu(null);setConfirmDelete(emp);}} className="w-full text-left px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-50 flex items-center gap-2.5"><Icon name="trash" className="w-4 h-4"/> Delete</button>
@@ -2408,6 +2415,12 @@ function AdminEmployees({ employees, setEmployees, addToast, onBulkImport, activ
                         <input value={form[k]||""} onChange={e=>setForm(f=>({...f,[k]:e.target.value}))} className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 font-mono"/></div>
                     ))}
                   </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1.5">Bank</label>
+                      <input value={form.bankName||""} onChange={e=>setForm(f=>({...f,bankName:e.target.value}))} placeholder="e.g. BDO" className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200"/></div>
+                    <div><label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1.5">Bank Account No.</label>
+                      <input value={form.bankAccount||""} onChange={e=>setForm(f=>({...f,bankAccount:e.target.value}))} placeholder="For payroll deposit" className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 font-mono"/></div>
+                  </div>
                   <p className="text-xs text-gray-400">Used by Payroll to compute pay and statutory deductions. Daily rate = monthly ÷ work days per month (see Payroll → Settings).</p>
                 </div>
               ):<ScheduleForm value={form.schedule} onChange={s=>setForm(f=>({...f,schedule:s}))}/>}
@@ -2452,6 +2465,46 @@ function AdminEmployees({ employees, setEmployees, addToast, onBulkImport, activ
         </div>
       )}
 
+      {/* HR documents modal */}
+      {docEmp&&(
+        <div className="fixed inset-0 bg-slate-900/25 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={()=>setDocEmp(null)}>
+          <div className="bg-white rounded-3xl p-7 max-w-md w-full max-h-[88vh] overflow-y-auto shadow-2xl" onClick={e=>e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-1">
+              <h2 className="text-lg font-black text-ink">Generate document</h2>
+              <button onClick={()=>setDocEmp(null)} className="w-9 h-9 rounded-lg hover:bg-gray-100 text-gray-400">✕</button>
+            </div>
+            <p className="text-sm text-gray-500 mb-4">{docEmp.name} — {docEmp.position||"—"}</p>
+            <div className="space-y-3">
+              <div><label className="text-xs font-bold text-gray-500 uppercase block mb-1">Document type</label>
+                <select value={docForm.type} onChange={e=>setDocForm(f=>({...f,type:e.target.value}))} className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm">
+                  <option value="coe">Certificate of Employment (COE)</option>
+                  <option value="coe-comp">COE with Compensation</option>
+                  <option value="nte">Notice to Explain (NTE)</option>
+                  <option value="contract">Employment Contract</option>
+                </select></div>
+              {(docForm.type==='coe'||docForm.type==='coe-comp')&&(
+                <div><label className="text-xs font-bold text-gray-500 uppercase block mb-1">Purpose (optional)</label>
+                  <input value={docForm.purpose} onChange={e=>setDocForm(f=>({...f,purpose:e.target.value}))} placeholder="e.g. bank loan application" className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm"/></div>
+              )}
+              {docForm.type==='nte'&&<>
+                <div><label className="text-xs font-bold text-gray-500 uppercase block mb-1">Incident date</label>
+                  <input type="date" value={docForm.incidentDate} onChange={e=>setDocForm(f=>({...f,incidentDate:e.target.value}))} className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm"/></div>
+                <div><label className="text-xs font-bold text-gray-500 uppercase block mb-1">Incident details</label>
+                  <textarea rows={3} value={docForm.details} onChange={e=>setDocForm(f=>({...f,details:e.target.value}))} placeholder="Describe the incident / alleged violation" className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm"/></div>
+              </>}
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="text-xs font-bold text-gray-500 uppercase block mb-1">Signatory name</label>
+                  <input value={docForm.signatory} onChange={e=>setDocForm(f=>({...f,signatory:e.target.value}))} placeholder="e.g. Maria Santos" className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm"/></div>
+                <div><label className="text-xs font-bold text-gray-500 uppercase block mb-1">Signatory title</label>
+                  <input value={docForm.signatoryTitle} onChange={e=>setDocForm(f=>({...f,signatoryTitle:e.target.value}))} className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm"/></div>
+              </div>
+              <div><label className="text-xs font-bold text-gray-500 uppercase block mb-1">Company name (on the document)</label>
+                <input value={docCompany} onChange={e=>setDocCompany(e.target.value)} placeholder="Your company name" className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm"/></div>
+              <button onClick={printDoc} className="w-full bg-brand-500 text-white text-sm font-bold py-3 rounded-xl hover:bg-brand-600 shadow-brand">🖨 Generate &amp; print</button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Portal login modal */}
       {portalEmp&&(
         <div className="fixed inset-0 bg-slate-900/25 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={()=>setPortalEmp(null)}>
@@ -3154,6 +3207,56 @@ function printPayslip(slip, emp, company, periodLabel) {
   w.document.close();
 }
 
+// HR documents (COE, NTE, Contract) — printable, filled from employee data.
+function printDocument(type, emp, company, f) {
+  const w = window.open('', '_blank', 'width=760,height=940'); if (!w) return;
+  const today = new Date().toLocaleDateString('en-PH', { year:'numeric', month:'long', day:'numeric' });
+  const start = emp.startDate ? new Date(emp.startDate+'T00:00:00').toLocaleDateString('en-PH',{year:'numeric',month:'long',day:'numeric'}) : '____________';
+  const co = company || '____________';
+  let title='', body='';
+  if (type==='coe' || type==='coe-comp') {
+    title='CERTIFICATE OF EMPLOYMENT';
+    body=`<p>TO WHOM IT MAY CONCERN:</p>
+    <p>This is to certify that <b>${emp.name}</b> is employed by <b>${co}</b> as <b>${emp.position||'____________'}</b>${emp.department?` in the ${emp.department} department`:''}, from <b>${start}</b> up to the present.</p>
+    ${type==='coe-comp'?`<p>${emp.name.split(' ')[0]} receives a monthly compensation of <b>${peso(emp.monthlyRate||0)}</b>.</p>`:''}
+    <p>This certification is issued upon the request of the above-named employee for <b>${f.purpose||'whatever legal purpose it may serve'}</b>.</p>
+    <p>Issued this ${today}.</p>`;
+  } else if (type==='nte') {
+    title='NOTICE TO EXPLAIN';
+    body=`<p>Date: ${today}</p><p>To: <b>${emp.name}</b> — ${emp.position||''}${emp.department?`, ${emp.department}`:''}</p>
+    <p>You are hereby directed to explain in writing, within <b>five (5) calendar days</b> from receipt of this notice, why no disciplinary action should be taken against you for the following incident:</p>
+    <div class="box"><p><b>Date of incident:</b> ${f.incidentDate||'____________'}</p><p>${(f.details||'').replace(/\n/g,'<br>')||'____________'}</p></div>
+    <p>Failure to submit your written explanation within the given period shall be deemed a waiver of your right to be heard, and the company shall decide based on available records.</p>
+    <p>You may also indicate whether you request a conference/hearing on the matter.</p>`;
+  } else {
+    title='EMPLOYMENT AGREEMENT';
+    body=`<p>This Employment Agreement is entered into on ${today} between <b>${co}</b> (the "Employer") and <b>${emp.name}</b> (the "Employee").</p>
+    <p><b>1. Position.</b> The Employee is engaged as <b>${emp.position||'____________'}</b>${emp.department?` in the ${emp.department} department`:''}, starting <b>${start}</b>.</p>
+    <p><b>2. Compensation.</b> The Employee shall receive a monthly salary of <b>${peso(emp.monthlyRate||0)}</b>, payable per the Employer's payroll schedule, less lawful deductions (SSS, PhilHealth, Pag-IBIG, withholding tax).</p>
+    <p><b>3. Work schedule.</b> ${emp.schedule?.shiftStart||'08:00'}–${emp.schedule?.shiftEnd||'17:00'}, rest day(s): ${(emp.schedule?.restDays||[]).join(', ')||'per company policy'}.</p>
+    <p><b>4. Benefits.</b> The Employee is entitled to benefits mandated by Philippine law, including 13th month pay and service incentive leave.</p>
+    <p><b>5. Company policies.</b> The Employee agrees to abide by the Employer's code of conduct and policies, as amended from time to time.</p>
+    <p style="margin-top:36px">SIGNED:</p>
+    <table class="sig"><tr><td>_______________________<br><b>${emp.name}</b><br>Employee</td><td>_______________________<br><b>${f.signatory||'____________'}</b><br>${f.signatoryTitle||'Authorized Representative'}, ${co}</td></tr></table>`;
+  }
+  w.document.write(`<!DOCTYPE html><html><head><title>${title} — ${emp.name}</title><style>
+    body{font-family:'Segoe UI',serif;color:#18191f;margin:48px;font-size:14px;line-height:1.7}
+    .head{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #5ac56b;padding-bottom:12px;margin-bottom:28px}
+    .brand{font-size:18px;font-weight:800}.brand span{color:#3a9c49}.co{font-size:13px;color:#717171}
+    h1{font-size:17px;letter-spacing:.12em;text-align:center;margin:0 0 24px}
+    p{margin:0 0 14px}.box{border:1px solid #ccc;border-radius:8px;padding:12px 16px;margin:0 0 14px}
+    .sig{width:100%;margin-top:28px}.sig td{width:50%;padding-top:40px}
+    .sign{margin-top:56px}
+    @media print{body{margin:20mm}}
+  </style></head><body>
+    <div class="head"><div class="brand">⚡ Bilis<span>Ops</span></div><div class="co">${co}</div></div>
+    <h1>${title}</h1>${body}
+    ${type!=='contract'?`<div class="sign"><p>_______________________<br><b>${f.signatory||'____________'}</b><br>${f.signatoryTitle||'Authorized Representative'}</p></div>`:''}
+    <script>window.onload=()=>window.print()</script>
+  </body></html>`);
+  w.document.close();
+}
+
 function AdminPayroll({ employees, allAttendance, leaves, addToast, adminUser }) {
   const [view,setView]=useState("runs"); // runs | settings
   const [settings,setSettings]=useState(null);
@@ -3184,13 +3287,18 @@ function AdminPayroll({ employees, allAttendance, leaves, addToast, adminUser })
   },[adminUser?.tenantId]);
   useEffect(()=>{ load(); },[load]);
 
-  const saveSettings=async()=>{
+  const saveSettings=async(next)=>{
+    const toSave=next||settings;
     setBusy(true);
-    const {error}=await supabase.from('payroll_settings').upsert({settings, updated_at:new Date().toISOString()},{onConflict:'tenant_id'});
+    const {error}=await supabase.from('payroll_settings').upsert({settings:toSave, updated_at:new Date().toISOString()},{onConflict:'tenant_id'});
     setBusy(false);
     if(error){ addToast("Failed to save: "+error.message,"error"); return; }
     addToast("Payroll settings saved.","success");
   };
+  // Platform pushed new government tables? Offer a one-click apply that keeps
+  // the tenant's own customizations (pay basis, premiums, extra holidays).
+  const ratesOutdated=settings&&settings.ratesVersion!==PH_PAYROLL_DEFAULTS.ratesVersion;
+  const applyRates=async()=>{ const next=applyStatutoryUpdate(settings); setSettings(next); await saveSettings(next); addToast(`Government rates updated to ${PH_PAYROLL_DEFAULTS.ratesVersion}.`,"success"); };
 
   // ── Build a run preview from attendance ────────────────────────────────────
   const makePreview=(periodStart,periodEnd,periodsPerMonth)=>{
@@ -3253,17 +3361,59 @@ function AdminPayroll({ employees, allAttendance, leaves, addToast, adminUser })
   const num=(v,def=0)=>{const n=Number(v);return Number.isFinite(n)?n:def;};
   const setS=(path,v)=>setSettings(p=>{ const c=JSON.parse(JSON.stringify(p)); const ks=path.split('.'); let o=c; while(ks.length>1)o=o[ks.shift()]; o[ks[0]]=v; return c; });
 
+  // ── Reports: government files, bank disbursement, alphalist, 13th month ─────
+  const [repRunId,setRepRunId]=useState(""); const [repSlips,setRepSlips]=useState([]);
+  const [repYear,setRepYear]=useState(TODAY.slice(0,4)); const [yearData,setYearData]=useState(null);
+  useEffect(()=>{ if(!repRunId){setRepSlips([]);return;} supabase.from('payslips').select('*').eq('run_id',repRunId).then(({data})=>setRepSlips(data||[])); },[repRunId]);
+  const loadYear=async()=>{
+    const {data:yrRuns}=await supabase.from('payroll_runs').select('*').gte('period_start',`${repYear}-01-01`).lte('period_start',`${repYear}-12-31`);
+    const finals=(yrRuns||[]).filter(r=>r.status==='final');
+    let slips=[];
+    for(const r of finals){ const {data}=await supabase.from('payslips').select('*').eq('run_id',r.id); slips=slips.concat(data||[]); }
+    setYearData({runs:finals.length, slips});
+  };
+  const dedAmt=(s,label)=>(s.data?.deductions||[]).filter(d=>d.label.startsWith(label)).reduce((a,d)=>a+d.amount,0);
+  const basicAmt=s=>(s.data?.earnings||[]).filter(e=>e.label.startsWith('Basic pay')).reduce((a,e)=>a+e.amount,0);
+  const dlCSV=(name,rows)=>{
+    const csv=rows.map(r=>r.map(c=>{const v=String(c??'');return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}).join(',')).join('\r\n');
+    const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob(["﻿"+csv],{type:'text/csv'})); a.download=name; a.click(); URL.revokeObjectURL(a.href);
+  };
+  const repRun=runs.find(r=>r.id===repRunId);
+  const repTag=repRun?`${repRun.period_start}_${repRun.period_end}`:'';
+  const dlSSS=()=>dlCSV(`SSS_${repTag}.csv`,[["Employee ID","Name","SSS No.","MSC","EE Share (this run)","ER Share (monthly)","EC (monthly)"],
+    ...repSlips.map(s=>{const e=empById[s.employee_id];const c=computeSSS(s.data.meta.monthlyRate,settings);return [s.employee_id,e?.name||'',e?.sssNo||'',c.msc,dedAmt(s,'SSS').toFixed(2),c.employer.toFixed(2),c.ec];})]);
+  const dlPH=()=>dlCSV(`PhilHealth_${repTag}.csv`,[["Employee ID","Name","PhilHealth No.","Monthly Basic","EE Share (this run)","ER Share (monthly)"],
+    ...repSlips.map(s=>{const e=empById[s.employee_id];const c=computePhilHealth(s.data.meta.monthlyRate,settings);return [s.employee_id,e?.name||'',e?.philhealthNo||'',s.data.meta.monthlyRate,dedAmt(s,'PhilHealth').toFixed(2),c.employer.toFixed(2)];})]);
+  const dlPG=()=>dlCSV(`PagIBIG_${repTag}.csv`,[["Employee ID","Name","Pag-IBIG MID","EE Share (this run)","ER Share (monthly)"],
+    ...repSlips.map(s=>{const e=empById[s.employee_id];const c=computePagibig(s.data.meta.monthlyRate,settings);return [s.employee_id,e?.name||'',e?.pagibigNo||'',dedAmt(s,'Pag-IBIG').toFixed(2),c.employer.toFixed(2)];})]);
+  const dl1601=()=>{const gross=repSlips.reduce((a,s)=>a+Number(s.gross),0);const allow=repSlips.reduce((a,s)=>a+(s.data?.earnings||[]).filter(e=>/Allowance/.test(e.label)).reduce((x,e)=>x+e.amount,0),0);const tax=repSlips.reduce((a,s)=>a+dedAmt(s,'Withholding tax'),0);const stat=repSlips.reduce((a,s)=>a+dedAmt(s,'SSS')+dedAmt(s,'PhilHealth')+dedAmt(s,'Pag-IBIG'),0);
+    dlCSV(`BIR1601C_summary_${repTag}.csv`,[["Item","Amount"],["Total compensation",gross.toFixed(2)],["Non-taxable allowances",allow.toFixed(2)],["Statutory contributions (EE)",stat.toFixed(2)],["Taxable compensation",(gross-allow-stat).toFixed(2)],["Tax withheld",tax.toFixed(2)],["Employees",repSlips.length]]);};
+  const dlBank=()=>dlCSV(`BankDisbursement_${repTag}.csv`,[["Bank","Account Number","Account Name","Amount"],
+    ...repSlips.map(s=>{const e=empById[s.employee_id];return [e?.bankName||'',e?.bankAccount||'',e?.name||s.employee_id,Number(s.net).toFixed(2)];})]);
+  const dl13th=()=>{if(!yearData)return;const per={};yearData.slips.forEach(s=>{per[s.employee_id]=(per[s.employee_id]||0)+basicAmt(s);});
+    dlCSV(`13thMonth_accrual_${repYear}.csv`,[["Employee ID","Name","Basic Earned (finalized)","13th Month Accrued"],
+    ...Object.entries(per).map(([id,b])=>[id,empById[id]?.name||'',b.toFixed(2),(b/12).toFixed(2)])]);};
+  const dlAlpha=()=>{if(!yearData)return;const per={};yearData.slips.forEach(s=>{const p=per[s.employee_id]||(per[s.employee_id]={gross:0,sss:0,ph:0,pg:0,tax:0});p.gross+=Number(s.gross);p.sss+=dedAmt(s,'SSS');p.ph+=dedAmt(s,'PhilHealth');p.pg+=dedAmt(s,'Pag-IBIG');p.tax+=dedAmt(s,'Withholding tax');});
+    dlCSV(`Alphalist_${repYear}.csv`,[["Employee ID","Name","TIN","Gross Compensation","SSS (EE)","PhilHealth (EE)","Pag-IBIG (EE)","Tax Withheld"],
+    ...Object.entries(per).map(([id,p])=>[id,empById[id]?.name||'',empById[id]?.tinNo||'',p.gross.toFixed(2),p.sss.toFixed(2),p.ph.toFixed(2),p.pg.toFixed(2),p.tax.toFixed(2)])]);};
+
   if(loading||!settings) return <div className="text-center py-20 text-gray-400 text-sm">Loading payroll…</div>;
 
   return (
     <div>
+      {ratesOutdated&&(
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl px-5 py-4 mb-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="text-sm text-amber-800"><b>Updated government rates are available</b> (v{PH_PAYROLL_DEFAULTS.ratesVersion}). Applying updates SSS, PhilHealth, Pag-IBIG, the tax table, and the holiday calendar — your own customizations are kept. Finalized payslips are never changed.</div>
+          <button disabled={busy} onClick={applyRates} className="shrink-0 bg-brand-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl hover:bg-brand-600 disabled:opacity-50 shadow-brand">Apply update</button>
+        </div>
+      )}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
         <div>
           <h1 className="text-xl font-black text-ink flex items-center gap-2"><Icon name="payroll" className="w-5 h-5 text-brand-600"/> Payroll</h1>
           <p className="text-sm text-gray-500 mt-0.5">Philippine statutory payroll — computed straight from attendance.</p>
         </div>
         <div className="flex gap-2">
-          {[["runs","Pay Runs"],["settings","Settings"]].map(([k,l])=>(
+          {[["runs","Pay Runs"],["reports","Reports"],["settings","Settings"]].map(([k,l])=>(
             <button key={k} onClick={()=>setView(k)} className={`px-4 py-2 rounded-xl text-xs font-bold border transition-colors ${view===k?"bg-brand-500 text-white border-brand-500":"bg-white text-gray-600 border-gray-200 hover:border-brand-300"}`}>{l}</button>
           ))}
         </div>
@@ -3333,6 +3483,61 @@ function AdminPayroll({ employees, allAttendance, leaves, addToast, adminUser })
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {view==="reports"&&(
+        <div className="space-y-5">
+          {/* Per-run government + bank files */}
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
+            <h2 className="font-bold text-gray-800 mb-1">Government &amp; bank files</h2>
+            <p className="text-xs text-gray-400 mb-4">Pick a pay run, then download remittance-ready CSVs. EE shares are what was actually deducted in that run; ER shares are monthly figures.</p>
+            <select value={repRunId} onChange={e=>setRepRunId(e.target.value)} className="w-full max-w-md border border-gray-200 rounded-xl px-3 py-2.5 text-sm mb-4">
+              <option value="">Select a pay run…</option>
+              {runs.map(r=><option key={r.id} value={r.id}>{periodLabel(r)} — {r.status==='final'?'Finalized':'Draft'}</option>)}
+            </select>
+            {repRunId&&(
+              <div className="flex flex-wrap gap-2">
+                <button onClick={dlSSS} className="text-xs font-bold px-4 py-2.5 rounded-xl bg-brand-500 text-white hover:bg-brand-600">↓ SSS contributions</button>
+                <button onClick={dlPH} className="text-xs font-bold px-4 py-2.5 rounded-xl bg-brand-500 text-white hover:bg-brand-600">↓ PhilHealth</button>
+                <button onClick={dlPG} className="text-xs font-bold px-4 py-2.5 rounded-xl bg-brand-500 text-white hover:bg-brand-600">↓ Pag-IBIG</button>
+                <button onClick={dl1601} className="text-xs font-bold px-4 py-2.5 rounded-xl bg-brand-500 text-white hover:bg-brand-600">↓ BIR 1601-C summary</button>
+                <button onClick={dlBank} className="text-xs font-bold px-4 py-2.5 rounded-xl bg-ink text-white hover:bg-gray-700">↓ Bank disbursement file</button>
+              </div>
+            )}
+            {repRunId&&repSlips.some(s=>!empById[s.employee_id]?.bankAccount)&&(
+              <p className="text-xs text-amber-600 mt-3">⚠ Some employees have no bank account on file (Employees → Edit → Pay) — their rows in the bank file will be blank.</p>
+            )}
+          </div>
+
+          {/* Annual: 13th month + alphalist */}
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
+            <h2 className="font-bold text-gray-800 mb-1">Year-end &amp; 13th month</h2>
+            <p className="text-xs text-gray-400 mb-4">Built from finalized pay runs of the year. 13th month = total basic earned ÷ 12, tracked all year — due by December 24.</p>
+            <div className="flex items-center gap-2 mb-4">
+              <input type="number" value={repYear} onChange={e=>setRepYear(e.target.value)} className="w-28 border border-gray-200 rounded-xl px-3 py-2.5 text-sm"/>
+              <button onClick={loadYear} className="text-xs font-bold px-4 py-2.5 rounded-xl bg-gray-100 text-gray-700 hover:bg-gray-200">Load year</button>
+              {yearData&&<span className="text-xs text-gray-400">{yearData.runs} finalized run(s) · {yearData.slips.length} payslips</span>}
+            </div>
+            {yearData&&(()=>{ const per={}; yearData.slips.forEach(s=>{per[s.employee_id]=(per[s.employee_id]||0)+basicAmt(s);}); const entries=Object.entries(per);
+              return entries.length===0?<p className="text-sm text-gray-400">No finalized payslips in {repYear} yet.</p>:(
+              <>
+                <div className="overflow-x-auto mb-3"><table className="w-full max-w-2xl text-sm">
+                  <thead><tr className="border-b border-gray-100 bg-gray-50/60">{["Employee","Basic earned","13th month accrued"].map(h=><th key={h} className="text-left text-xs font-semibold text-gray-400 uppercase tracking-wider px-4 py-2.5">{h}</th>)}</tr></thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {entries.map(([id,b])=>(
+                      <tr key={id}><td className="px-4 py-2.5 font-semibold text-gray-800">{empById[id]?.name||id}</td><td className="px-4 py-2.5 font-mono text-xs">{peso(b)}</td><td className="px-4 py-2.5 font-mono text-xs font-bold text-brand-700">{peso(b/12)}</td></tr>
+                    ))}
+                    <tr className="bg-brand-50/50"><td className="px-4 py-2.5 font-black text-ink">Total</td><td className="px-4 py-2.5 font-mono text-xs font-bold">{peso(entries.reduce((a,[,b])=>a+b,0))}</td><td className="px-4 py-2.5 font-mono text-xs font-black text-brand-700">{peso(entries.reduce((a,[,b])=>a+b,0)/12)}</td></tr>
+                  </tbody>
+                </table></div>
+                <div className="flex gap-2">
+                  <button onClick={dl13th} className="text-xs font-bold px-4 py-2.5 rounded-xl bg-brand-500 text-white hover:bg-brand-600">↓ 13th month CSV</button>
+                  <button onClick={dlAlpha} className="text-xs font-bold px-4 py-2.5 rounded-xl bg-brand-500 text-white hover:bg-brand-600">↓ Alphalist CSV</button>
+                </div>
+              </>
+            );})()}
           </div>
         </div>
       )}
@@ -3438,7 +3643,7 @@ function AdminPayroll({ employees, allAttendance, leaves, addToast, adminUser })
           </div>
 
           <div className="flex justify-end">
-            <button disabled={busy} onClick={saveSettings} className="bg-brand-500 text-white text-sm font-bold px-6 py-3 rounded-xl hover:bg-brand-600 disabled:opacity-50 shadow-brand">{busy?"Saving…":"Save settings"}</button>
+            <button disabled={busy} onClick={()=>saveSettings()} className="bg-brand-500 text-white text-sm font-bold px-6 py-3 rounded-xl hover:bg-brand-600 disabled:opacity-50 shadow-brand">{busy?"Saving…":"Save settings"}</button>
           </div>
         </div>
       )}
@@ -4827,10 +5032,10 @@ function AppInner() {
       const deletedIds=prev.filter(p=>!next.find(n=>n.id===p.id)).map(p=>p.id);
       if (upserts.length>0) {
         const baseRows=upserts.map(e=>({id:e.id,name:e.name,position:e.position,department:e.department,role:e.role||'Staff',contact:e.contact,qr_code:e.qrCode||null,rfid_uid:e.rfidUid||null,face_descriptors:Array.isArray(e.faceDescriptors)?e.faceDescriptors:[],status:e.status,emp_type:e.empType||'Regular',start_date:e.startDate||null,schedule:e.schedule}));
-        const payRows=upserts.map((e,i)=>({...baseRows[i],monthly_rate:numOr(e.monthlyRate,0),allowance:numOr(e.allowance,0),sss_no:e.sssNo||null,philhealth_no:e.philhealthNo||null,pagibig_no:e.pagibigNo||null,tin_no:e.tinNo||null}));
+        const payRows=upserts.map((e,i)=>({...baseRows[i],monthly_rate:numOr(e.monthlyRate,0),allowance:numOr(e.allowance,0),sss_no:e.sssNo||null,philhealth_no:e.philhealthNo||null,pagibig_no:e.pagibigNo||null,tin_no:e.tinNo||null,bank_name:e.bankName||null,bank_account:e.bankAccount||null}));
         supabase.from('employees').upsert(payRows).then(async({error})=>{
           // Databases that haven't run the payroll migration yet lack the pay columns — retry without them.
-          if(error&&/monthly_rate|allowance|sss_no|philhealth_no|pagibig_no|tin_no/.test(error.message)) ({error}=await supabase.from('employees').upsert(baseRows));
+          if(error&&/monthly_rate|allowance|sss_no|philhealth_no|pagibig_no|tin_no|bank_name|bank_account/.test(error.message)) ({error}=await supabase.from('employees').upsert(baseRows));
           if(error) addToast('DB sync error: '+error.message,'error');
         });
       }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, Component } from "react";
-import { supabase, setTenant } from './supabase.js';
+import { supabase, setTenant, getTenant } from './supabase.js';
 import { PH_PAYROLL_DEFAULTS, mergeSettings, computePayslip, computeSSS, computePhilHealth, computePagibig, peso } from './payroll.js';
 import { FaceEnroll } from './FaceEnroll.jsx';
 import { loadFaceModels, detectFace, buildMatcher, MATCH_THRESHOLD } from './face.js';
@@ -813,11 +813,11 @@ function EmployeePortal({ account, onLogout, addToast }) {
     if(lv.date_to<lv.date_from){ addToast("End date can't be before start date.","error"); return; }
     if(lv.leave_type==="offset"&&!(Number(lv.offset_hours)>0)){ addToast("Enter the offset hours.","error"); return; }
     setFiling(true);
-    const {error}=await supabase.from('leaves').insert({
-      employee_id:account.employeeId, date_from:lv.date_from, date_to:lv.date_to,
-      leave_type:lv.leave_type, reason:lv.reason||null, filed_by:account.username,
-      status:'pending', offset_hours:lv.leave_type==="offset"?Number(lv.offset_hours):null,
-    });
+    const baseRow={employee_id:account.employeeId, date_from:lv.date_from, date_to:lv.date_to,
+      leave_type:lv.leave_type, reason:lv.reason||null, filed_by:account.username};
+    let {error}=await supabase.from('leaves').insert({...baseRow, status:'pending', offset_hours:lv.leave_type==="offset"?Number(lv.offset_hours):null});
+    // Pre-migration databases lack status/offset columns — retry with the basic row.
+    if(error&&/status|offset_hours/.test(error.message)) ({error}=await supabase.from('leaves').insert(baseRow));
     if(!error) await supabase.from('notifications').insert({type:'leave-request',title:`${lv.leave_type==="offset"?"Offset":"Leave"} request — ${emp?.name||account.username}`,message:`${emp?.name||account.username} filed ${lv.leave_type} for ${lv.date_from}${lv.date_to!==lv.date_from?" → "+lv.date_to:""}. Review it in Leave.`,employee_id:account.employeeId,department:emp?.department||null});
     setFiling(false);
     if(error){ addToast("Failed: "+error.message,"error"); return; }
@@ -1570,7 +1570,7 @@ function FacialKiosk({ employees, allAttendance, onScan, onBack, onKioskLogout, 
   const [showSettings,setShowSettings]=useState(false);
   const [enrollEmp,setEnrollEmp]=useState(null); const [enrollSaving,setEnrollSaving]=useState(false);
   const camWasOnRef=useRef(false);
-  const openSettings=()=>{ camWasOnRef.current=camOn; if(camOn) stopCam(); setShowSettings(true); };
+  const openSettings=()=>{ setStandby(false); lastFaceRef.current=Date.now(); camWasOnRef.current=camOn; if(camOn) stopCam(); setShowSettings(true); };
   const closeSettings=()=>{ setShowSettings(false); setEnrollEmp(null); if(camWasOnRef.current) startCam(); };
   const savePrefs=p=>{ setPrefs(p); saveKioskPrefs(p); };
   const saveEnrollment=async(desc)=>{
@@ -3168,8 +3168,13 @@ function AdminPayroll({ employees, allAttendance, leaves, addToast, adminUser })
 
   const load=useCallback(async()=>{
     setLoading(true);
+    // Tenant admins are auto-scoped to their row; the super admin (no tenant)
+    // must target the platform's own settings row or maybeSingle() breaks the
+    // moment two tenants have saved settings.
+    let stQuery=supabase.from('payroll_settings').select('*');
+    if(!getTenant()) stQuery=stQuery.eq('tenant_id','00000000-0000-0000-0000-000000000000');
     const [{data:st},{data:rn}]=await Promise.all([
-      supabase.from('payroll_settings').select('*').maybeSingle(),
+      stQuery.maybeSingle(),
       supabase.from('payroll_runs').select('*').order('period_start',{ascending:false}).limit(24),
     ]);
     setSettings(mergeSettings(st?.settings));
@@ -3950,11 +3955,11 @@ function AdminLeaves({ employees, leaves, addToast, activeDept, adminUser, reloa
     if (!form.date_from||!form.date_to){ addToast("Pick the leave dates.","error"); return; }
     if (form.date_to<form.date_from){ addToast("End date can't be before start date.","error"); return; }
     setSaving(true);
-    const {error}=await supabase.from('leaves').insert({
-      employee_id:form.employee_id, date_from:form.date_from, date_to:form.date_to,
-      leave_type:form.leave_type, reason:form.reason||null, filed_by:adminUser.username,
-      status:'approved', reviewed_by:adminUser.username,
-    });
+    const baseRow={employee_id:form.employee_id, date_from:form.date_from, date_to:form.date_to,
+      leave_type:form.leave_type, reason:form.reason||null, filed_by:adminUser.username};
+    let {error}=await supabase.from('leaves').insert({...baseRow, status:'approved', reviewed_by:adminUser.username});
+    // Pre-migration databases lack the approval columns — retry without them.
+    if(error&&/status|reviewed_by/.test(error.message)) ({error}=await supabase.from('leaves').insert(baseRow));
     setSaving(false);
     if (error){ addToast("Failed to file leave: "+error.message,"error"); return; }
     await logAudit(adminUser,"leave_filed",empName(form.employee_id),`${form.leave_type} ${form.date_from}→${form.date_to}`);
@@ -4820,7 +4825,15 @@ function AppInner() {
       const next=typeof updaterOrValue==="function"?updaterOrValue(prev):updaterOrValue;
       const upserts=next.filter(n=>{const old=prev.find(p=>p.id===n.id);return !old||JSON.stringify(old)!==JSON.stringify(n);});
       const deletedIds=prev.filter(p=>!next.find(n=>n.id===p.id)).map(p=>p.id);
-      if (upserts.length>0) supabase.from('employees').upsert(upserts.map(e=>({id:e.id,name:e.name,position:e.position,department:e.department,role:e.role||'Staff',contact:e.contact,qr_code:e.qrCode||null,rfid_uid:e.rfidUid||null,face_descriptors:Array.isArray(e.faceDescriptors)?e.faceDescriptors:[],status:e.status,emp_type:e.empType||'Regular',start_date:e.startDate||null,schedule:e.schedule,monthly_rate:numOr(e.monthlyRate,0),allowance:numOr(e.allowance,0),sss_no:e.sssNo||null,philhealth_no:e.philhealthNo||null,pagibig_no:e.pagibigNo||null,tin_no:e.tinNo||null}))).then(({error})=>{ if(error) addToast('DB sync error: '+error.message,'error'); });
+      if (upserts.length>0) {
+        const baseRows=upserts.map(e=>({id:e.id,name:e.name,position:e.position,department:e.department,role:e.role||'Staff',contact:e.contact,qr_code:e.qrCode||null,rfid_uid:e.rfidUid||null,face_descriptors:Array.isArray(e.faceDescriptors)?e.faceDescriptors:[],status:e.status,emp_type:e.empType||'Regular',start_date:e.startDate||null,schedule:e.schedule}));
+        const payRows=upserts.map((e,i)=>({...baseRows[i],monthly_rate:numOr(e.monthlyRate,0),allowance:numOr(e.allowance,0),sss_no:e.sssNo||null,philhealth_no:e.philhealthNo||null,pagibig_no:e.pagibigNo||null,tin_no:e.tinNo||null}));
+        supabase.from('employees').upsert(payRows).then(async({error})=>{
+          // Databases that haven't run the payroll migration yet lack the pay columns — retry without them.
+          if(error&&/monthly_rate|allowance|sss_no|philhealth_no|pagibig_no|tin_no/.test(error.message)) ({error}=await supabase.from('employees').upsert(baseRows));
+          if(error) addToast('DB sync error: '+error.message,'error');
+        });
+      }
       if (deletedIds.length>0) supabase.from('employees').delete().in('id',deletedIds).then(({error})=>{ if(error) addToast('DB delete error: '+error.message,'error'); });
       return next;
     });

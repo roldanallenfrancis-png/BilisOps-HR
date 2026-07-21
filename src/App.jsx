@@ -3748,6 +3748,15 @@ function AdminRegistrations({ adminUser, addToast }) {
     setBusy(null); addToast(`${r.name} approved — tenant created for "${r.username}".`,"success"); load();
   };
   const reject=async r=>{ setBusy(r.id); await supabase.from('registrations').update({status:'rejected',reviewed_by:adminUser.username,reviewed_at:new Date().toISOString()}).eq('id',r.id); setBusy(null); addToast(`${r.name}'s registration rejected.`,"info"); load(); };
+  // Upgrade/downgrade a customer's plan — their modules re-scope on next login.
+  const changePlan=async(r,module)=>{
+    if(module===(r.module||"All-in-One")) return;
+    const {error}=await supabase.from('registrations').update({module}).eq('id',r.id);
+    if(error){ addToast("Failed: "+error.message,"error"); return; }
+    await logAudit(adminUser,'plan_changed',r.company||r.name,`${r.module||'All-in-One'} → ${module}`);
+    addToast(`${r.company||r.name} plan set to ${module}${r.status==='approved'?" — applies on their next login":""}.`,"success");
+    load();
+  };
   const doDelete=async()=>{ await supabase.from('registrations').delete().eq('id',confirmDel.id); setConfirmDel(null); addToast("Registration deleted.","info"); load(); };
 
   const counts={ pending:regs.filter(r=>r.status==="pending").length, approved:regs.filter(r=>r.status==="approved").length, rejected:regs.filter(r=>r.status==="rejected").length };
@@ -3781,7 +3790,13 @@ function AdminRegistrations({ adminUser, addToast }) {
                   <td className="px-5 py-3.5"><div className="font-semibold text-gray-800">{r.name}</div>{r.tenant_id&&<div className="text-[10px] font-mono text-gray-400" title={`Tenant ID: ${r.tenant_id}`}>tenant {String(r.tenant_id).slice(0,8)}</div>}</td>
                   <td className="px-5 py-3.5 text-gray-600">{r.company||"—"}</td>
                   <td className="px-5 py-3.5 text-gray-600">{r.email}</td>
-                  <td className="px-5 py-3.5">{r.module?<span className="text-xs font-bold px-2.5 py-1 rounded-full bg-brand-50 text-brand-700 border border-brand-100">{r.module}</span>:<span className="text-gray-300">—</span>}</td>
+                  <td className="px-5 py-3.5">
+                    {/* Plan switcher — changing it re-scopes the customer's modules on their next login */}
+                    <select value={r.module||"All-in-One"} onChange={e=>changePlan(r,e.target.value)} title="Change this customer's plan"
+                      className="text-xs font-bold px-2 py-1.5 rounded-lg bg-brand-50 text-brand-700 border border-brand-200 cursor-pointer hover:border-brand-400 focus:outline-none">
+                      {["Attendance","Payroll","Directory","All-in-One"].map(m=><option key={m} value={m}>{m}</option>)}
+                    </select>
+                  </td>
                   <td className="px-5 py-3.5 text-xs text-gray-600 whitespace-nowrap">{r.phone||"—"}</td>
                   <td className="px-5 py-3.5 text-xs text-gray-500 whitespace-nowrap">{r.created_at?new Date(r.created_at).toLocaleDateString("en-PH",{month:"short",day:"numeric",year:"numeric"}):"—"}</td>
                   <td className="px-5 py-3.5"><span className={`text-xs font-bold px-2.5 py-1 rounded-full border capitalize ${badge(r.status)}`}>{r.status}</span></td>
@@ -3804,7 +3819,10 @@ function AdminRegistrations({ adminUser, addToast }) {
         <div className="fixed inset-0 bg-slate-900/25 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={()=>setConfirmDel(null)}>
           <div className="bg-white rounded-3xl p-7 max-w-sm w-full shadow-2xl" onClick={e=>e.stopPropagation()}>
             <h2 className="text-lg font-black text-ink mb-2">Delete registration</h2>
-            <p className="text-sm text-gray-500 mb-5">Remove <span className="font-bold">{confirmDel.name}</span>'s registration? This can't be undone.</p>
+            <p className="text-sm text-gray-500 mb-3">Remove <span className="font-bold">{confirmDel.name}</span>'s registration? This can't be undone.</p>
+            {confirmDel.status==='approved'&&(
+              <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl px-3 py-2.5 mb-5">⚠ This registration holds the customer's <b>plan ({confirmDel.module||"All-in-One"})</b>. Deleting it resets their account to ALL modules on next login. To change their access, use the plan dropdown instead.</p>
+            )}
             <div className="flex gap-3">
               <button onClick={()=>setConfirmDel(null)} className="flex-1 border border-gray-200 text-gray-600 text-sm font-semibold py-2.5 rounded-xl hover:bg-gray-50">Cancel</button>
               <button onClick={doDelete} className="flex-1 bg-red-600 text-white text-sm font-bold py-2.5 rounded-xl hover:bg-red-700">Delete</button>

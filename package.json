@@ -15,7 +15,7 @@
     "build:sites": "npm run build:landing && npm run build:app && npm run build:admin",
     "build:qr": "vite build --mode qr",
     "build:facial": "vite build --mode facial",
-    "build:apk": "vite build --mode kiosk",
+    "build:apk": "vite build --mode kiosk && node -e \"require('fs').rmSync('dist/BilisOps-Kiosk.apk',{force:true})\"",
     "preview": "vite preview",
     "android:sync": "vite build && npx cap sync android",
     "android:open": "npm run android:sync && npx cap open android",

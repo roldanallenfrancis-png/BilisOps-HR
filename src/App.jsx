@@ -4739,26 +4739,40 @@ function AdminPortal({ employees, setEmployees, allAttendance, leaves, roles, ad
   const roleOptions=useMemo(()=>{ const fromEmp=[...new Set(employees.map(e=>e.role||"Staff"))]; return [...new Set([...(roles||[]),...fromEmp])].sort(); },[roles,employees]);
   const [roleMenuOpen,setRoleMenuOpen]=useState(false);
 
-  const NAV=[
+  // Grouped navigation: parent ("mother") buttons drop down their child pages.
+  const NAV_TREE=[
     {k:"dashboard",l:"Dashboard",icon:"dashboard",mod:"attendance"},
-    {k:"employees",l:"Employees",icon:"employees"},                       // core — every module needs the roster
-    {k:"directory",l:"Directory",icon:"directory",mod:"directory"},
-    {k:"schedules",l:"Schedules",icon:"schedules",mod:"attendance"},
-    {k:"leaves",   l:"Leave",    icon:"leaves",   mod:"attendance"},
-    {k:"manpower", l:"Manpower Planning",icon:"manpower",mod:"attendance"},
-    {k:"behavior", l:"Behavior", icon:"behavior", mod:"attendance"},
-    {k:"reports",  l:"Reports",  icon:"reports",  mod:"attendance"},
+    {g:"People",icon:"employees",kids:[
+      {k:"employees",l:"Employees",icon:"employees"},                     // core — every module needs the roster
+      {k:"directory",l:"Directory",icon:"directory",mod:"directory"},
+    ]},
+    {g:"Attendance",icon:"clock",kids:[
+      {k:"schedules",l:"Schedules",icon:"schedules",mod:"attendance"},
+      {k:"leaves",   l:"Leave",    icon:"leaves",   mod:"attendance"},
+      {k:"manpower", l:"Manpower Planning",icon:"manpower",mod:"attendance"},
+      {k:"behavior", l:"Behavior", icon:"behavior", mod:"attendance"},
+      {k:"reports",  l:"Reports",  icon:"reports",  mod:"attendance"},
+    ]},
     {k:"payroll",  l:"Payroll",  icon:"payroll",  mod:"payroll"},
-    {k:"registrations", l:"Registrations", icon:"userplus",superOnly:true},
-    {k:"accounts", l:"Accounts", icon:"accounts",superOnly:true},
-    {k:"audit",    l:"Settings", icon:"settings",superOnly:true},
+    {g:"Admin",icon:"shield",superOnly:true,kids:[
+      {k:"registrations", l:"Registrations", icon:"userplus",superOnly:true},
+      {k:"accounts", l:"Accounts", icon:"accounts",superOnly:true},
+      {k:"audit",    l:"Settings", icon:"settings",superOnly:true},
+    ]},
   ];
   const goToReports=(status,from,to)=>{setRF(status);setReportRange({from,to,n:(reportRange?.n||0)+1});setPage("reports");};
-  const nav=NAV.filter(n=>(!n.superOnly||isSuperAdmin)&&(!n.mod||hasMod(adminUser,n.mod))&&(n.superOnly||canPage(adminUser,n.k)));
+  const navOk=n=>(!n.superOnly||isSuperAdmin)&&(!n.mod||hasMod(adminUser,n.mod))&&(n.superOnly||!n.k||canPage(adminUser,n.k));
+  const tree=NAV_TREE.map(n=>n.kids?{...n,kids:n.kids.filter(navOk)}:n).filter(n=>n.kids?(n.kids.length>0&&(!n.superOnly||isSuperAdmin)):navOk(n));
+  const flatNav=tree.flatMap(n=>n.kids||[n]);
+  const [openGroups,setOpenGroups]=useState(()=>{const o={};NAV_TREE.forEach(n=>{if(n.kids&&n.kids.some(c=>c.k===page))o[n.g]=true;});return o;});
+  const toggleGroup=g=>setOpenGroups(p=>({...p,[g]:!p[g]}));
   const go=k=>{ if(k==="reports"){ setRF("all"); setReportRange(null); } setPage(k); setMobileOpen(false); quietRefresh?.(); };
   const toggleDept=d=>setSelectedDepts(p=>p.includes(d)?p.filter(x=>x!==d):[...p,d]);
 
-  const collapsed = !hovered; // expand on hover, collapse otherwise
+  // Collapsible sidebar: a pin toggle (remembered per device) + hover-to-peek when collapsed.
+  const [navPinned,setNavPinned]=useState(()=>{ try{ return localStorage.getItem('bilisops_nav_pinned')!=='0'; }catch{ return true; } });
+  const setPinned=v=>{ setNavPinned(v); try{ localStorage.setItem('bilisops_nav_pinned',v?'1':'0'); }catch{} };
+  const collapsed = !navPinned && !hovered;
   const sidebarW = collapsed ? "w-16" : "w-60";
 
   return (
@@ -4769,16 +4783,36 @@ function AdminPortal({ employees, setEmployees, allAttendance, leaves, roles, ad
       {mobileOpen&&<div className="fixed inset-0 bg-slate-900/20 backdrop-blur-sm z-30 md:hidden" onClick={()=>setMobileOpen(false)}/>}
 
       {/* Sidebar */}
-      {/* Spacer to reserve collapsed width in the layout (desktop) */}
-      <div className="hidden md:block w-16 shrink-0"/>
+      {/* Spacer reserves the pinned width in the layout (desktop) */}
+      <div className={`hidden md:block ${navPinned?"w-60":"w-16"} shrink-0 transition-all duration-200`}/>
       <aside onMouseEnter={()=>setHovered(true)} onMouseLeave={()=>setHovered(false)}
-        className={`${sidebarW} ${mobileOpen?"translate-x-0 w-60":"-translate-x-full"} md:translate-x-0 fixed top-0 left-0 z-40 h-screen bg-gradient-to-b from-white to-brand-50/50 border-r border-gray-100 text-gray-600 flex flex-col transition-all duration-200 shrink-0 ${hovered?"shadow-xl":""}`}>
+        className={`${sidebarW} ${mobileOpen?"translate-x-0 w-60":"-translate-x-full"} md:translate-x-0 fixed top-0 left-0 z-40 h-screen bg-gradient-to-b from-white to-brand-50/50 border-r border-gray-100 text-gray-600 flex flex-col transition-all duration-200 shrink-0 ${hovered&&!navPinned?"shadow-xl":""}`}>
         <button onClick={handleLogoTap} className="flex items-center gap-3 px-4 h-16 border-b border-gray-100 shrink-0 w-full text-left hover:bg-brand-50 transition-colors">
           <BrandMark className="w-9 h-9 rounded-xl"/>
           {!collapsed&&<div className="min-w-0"><div className="font-black text-sm truncate text-ink">BilisOps</div><div className="text-brand-600 text-[10px] font-bold">Smart Attendance</div></div>}
         </button>
         <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-1">
-          {nav.map(item=>(
+          {tree.map(item=>item.kids?(
+            <div key={item.g}>
+              {/* Mother button — drops down its daughter pages */}
+              <button onClick={()=>{ if(collapsed){ setPinned(true); setOpenGroups(p=>({...p,[item.g]:true})); } else toggleGroup(item.g); }} title={item.g}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-colors ${item.kids.some(c=>c.k===page)?"text-brand-700 bg-brand-50/70":"text-gray-500"} hover:text-brand-700 hover:bg-brand-50`}>
+                <Icon name={item.icon} className="w-5 h-5 shrink-0"/>
+                {!collapsed&&<><span className="truncate flex-1 text-left">{item.g}</span><span className={`text-[10px] text-gray-400 transition-transform duration-200 ${openGroups[item.g]?"rotate-90":""}`}>▶</span></>}
+              </button>
+              {!collapsed&&openGroups[item.g]&&(
+                <div className="mt-1 space-y-1">
+                  {item.kids.map(c=>(
+                    <button key={c.k} onClick={()=>go(c.k)} title={c.l}
+                      className={`w-full flex items-center gap-2.5 pl-9 pr-3 py-2 rounded-xl text-[13px] font-semibold transition-colors ${page===c.k?"bg-brand-500 text-white shadow-brand":"text-gray-500 hover:text-brand-700 hover:bg-brand-50"}`}>
+                      <Icon name={c.icon} className="w-4 h-4 shrink-0"/>
+                      <span className="truncate">{c.l}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ):(
             <button key={item.k} onClick={()=>go(item.k)} title={item.l}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-colors ${page===item.k?"bg-brand-500 text-white shadow-brand":"text-gray-500 hover:text-brand-700 hover:bg-brand-50"}`}>
               <Icon name={item.icon} className="w-5 h-5 shrink-0"/>
@@ -4787,6 +4821,11 @@ function AdminPortal({ employees, setEmployees, allAttendance, leaves, roles, ad
           ))}
         </nav>
         <div className="border-t border-gray-100 p-2 space-y-1">
+          <button onClick={()=>setPinned(!navPinned)} title={navPinned?"Collapse sidebar":"Expand sidebar"}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-gray-400 hover:text-brand-700 hover:bg-brand-50 transition-colors">
+            <span className={`w-5 h-5 shrink-0 flex items-center justify-center font-black transition-transform duration-200 ${navPinned?"":"rotate-180"}`}>«</span>
+            {!collapsed&&<span>Collapse</span>}
+          </button>
           <button onClick={onLogout} title="Sign Out" className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-gray-500 hover:text-red-600 hover:bg-red-50 transition-colors">
             <Icon name="logout" className="w-5 h-5 shrink-0"/>{!collapsed&&<span>Sign Out</span>}
           </button>
@@ -4799,7 +4838,7 @@ function AdminPortal({ employees, setEmployees, allAttendance, leaves, roles, ad
           <div className="px-4 md:px-6 flex items-center justify-between h-16 gap-3">
             <div className="flex items-center gap-3">
               <button onClick={()=>setMobileOpen(true)} className="md:hidden text-gray-500"><Icon name="menu" className="w-6 h-6"/></button>
-              <h2 className="font-black text-gray-900 text-base capitalize">{nav.find(n=>n.k===page)?.l||page}</h2>
+              <h2 className="font-black text-gray-900 text-base capitalize">{flatNav.find(n=>n.k===page)?.l||page}</h2>
             </div>
             <div className="flex items-center gap-2">
               {/* Multi-select department */}

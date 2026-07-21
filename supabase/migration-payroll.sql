@@ -70,3 +70,24 @@ begin
     execute format('create policy "anon full access" on %I for all using (true) with check (true)', t);
   end loop;
 end $$;
+
+-- Customers: one row per business (the subscription record — plan + status)
+create table if not exists tenants (
+  id           uuid primary key,                 -- = the tenant id (registration id)
+  company      text,
+  contact_name text,
+  email        text,
+  phone        text,
+  plan         text default 'All-in-One',        -- Attendance | Payroll | Directory | All-in-One
+  status       text default 'active',            -- active | suspended
+  created_at   timestamptz default now()
+);
+alter table tenants enable row level security;
+drop policy if exists "anon full access" on tenants;
+create policy "anon full access" on tenants for all using (true) with check (true);
+
+-- Backfill: every already-approved registration becomes a customer row
+insert into tenants (id, company, contact_name, email, phone, plan, status)
+select tenant_id, company, name, email, phone, coalesce(module,'All-in-One'), 'active'
+from registrations where status='approved' and tenant_id is not null
+on conflict (id) do nothing;

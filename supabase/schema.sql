@@ -147,6 +147,18 @@ create table if not exists registrations (
   created_at    timestamptz default now()
 );
 
+-- ── Customers (one row per business — the subscription record) ───────────────
+create table if not exists tenants (
+  id           uuid primary key,                 -- = the tenant id (registration id)
+  company      text,
+  contact_name text,
+  email        text,
+  phone        text,
+  plan         text default 'All-in-One',        -- Attendance | Payroll | Directory | All-in-One
+  status       text default 'active',            -- active | suspended
+  created_at   timestamptz default now()
+);
+
 -- ── Payroll ──────────────────────────────────────────────────────────────────
 create table if not exists payroll_settings (
   tenant_id  uuid primary key,
@@ -205,7 +217,7 @@ do $$ begin
 do $$
 declare t text;
 begin
-  foreach t in array array['employees','attendance','leaves','roles','notifications','audit_log','admin_accounts','registrations','payroll_settings','payroll_runs','payslips']
+  foreach t in array array['employees','attendance','leaves','roles','notifications','audit_log','admin_accounts','registrations','payroll_settings','payroll_runs','payslips','tenants']
   loop
     execute format('alter table %I enable row level security', t);
     execute format('drop policy if exists "anon full access" on %I', t);

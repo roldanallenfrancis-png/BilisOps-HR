@@ -1034,11 +1034,17 @@ function AdminLogin({ onLogin, onBack, onRegister }) {
       if (!data||data.password_hash!==btoa(p)) { setErr("Incorrect username or password."); setLoading(false); return; }
       if (data.must_change_password) { setMustChange(data); setLoading(false); return; } // force password change first
       await supabase.from('admin_accounts').update({last_login:new Date().toISOString()}).eq('id',data.id);
-      // Tenant accounts are entitled to the module(s) they registered for.
+      // Tenant accounts: plan + status come from the customer record (tenants),
+      // falling back to the registration for pre-migration databases.
       let modules=null;
-      if (data.tenant_id && data.role!=='employee') {
-        const {data:reg}=await supabase.from('registrations').select('module').eq('id',data.tenant_id).maybeSingle();
-        modules=modulesOf(reg?.module);
+      if (data.tenant_id) {
+        const {data:t}=await supabase.from('tenants').select('plan,status').eq('id',data.tenant_id).maybeSingle();
+        if (t?.status==='suspended') { setErr("This account is suspended. Please contact BilisOps."); setLoading(false); return; }
+        if (data.role!=='employee') {
+          let planName=t?.plan;
+          if(!planName){ const {data:reg}=await supabase.from('registrations').select('module').eq('id',data.tenant_id).maybeSingle(); planName=reg?.module; }
+          modules=modulesOf(planName);
+        }
       }
       const user={id:data.id,username:data.username,role:data.role,departmentAccess:data.department_access||null,tenantId:data.tenant_id||null,employeeId:data.employee_id||null,pageAccess:Array.isArray(data.page_access)&&data.page_access.length?data.page_access:null,modules,loginTime:new Date().toLocaleTimeString("en-PH")};
       onLogin(user);
@@ -1054,8 +1060,10 @@ function AdminLogin({ onLogin, onBack, onRegister }) {
       await supabase.from('admin_accounts').update({password_hash:btoa(np),must_change_password:false,last_login:new Date().toISOString()}).eq('id',mustChange.id);
       let modules=null;
       if (mustChange.tenant_id && mustChange.role!=='employee') {
-        const {data:reg}=await supabase.from('registrations').select('module').eq('id',mustChange.tenant_id).maybeSingle();
-        modules=modulesOf(reg?.module);
+        const {data:t}=await supabase.from('tenants').select('plan').eq('id',mustChange.tenant_id).maybeSingle();
+        let planName=t?.plan;
+        if(!planName){ const {data:reg}=await supabase.from('registrations').select('module').eq('id',mustChange.tenant_id).maybeSingle(); planName=reg?.module; }
+        modules=modulesOf(planName);
       }
       const user={id:mustChange.id,username:mustChange.username,role:mustChange.role,departmentAccess:mustChange.department_access||null,tenantId:mustChange.tenant_id||null,employeeId:mustChange.employee_id||null,pageAccess:Array.isArray(mustChange.page_access)&&mustChange.page_access.length?mustChange.page_access:null,modules,loginTime:new Date().toLocaleTimeString("en-PH")};
       onLogin(user);
@@ -3721,6 +3729,111 @@ function AdminPayroll({ employees, allAttendance, leaves, addToast, adminUser })
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// ADMIN CUSTOMERS — one row per business: plan, status, headcount. This is the
+// subscription record; Registrations is just the signup inbox.
+// ════════════════════════════════════════════════════════════════════════════
+function AdminCustomers({ adminUser, addToast }) {
+  const [rows,setRows]=useState([]); const [loading,setLoading]=useState(true);
+  const [missing,setMissing]=useState(false); const [counts,setCounts]=useState({empl:{},accts:{}});
+  const [confirmSuspend,setConfirmSuspend]=useState(null);
+
+  const load=useCallback(async()=>{
+    setLoading(true);
+    const {data,error}=await supabase.from('tenants').select('*').order('created_at',{ascending:false});
+    if(error){ setMissing(true); setLoading(false); return; }
+    setRows(data||[]); setMissing(false);
+    const [{data:emps},{data:accts}]=await Promise.all([
+      supabase.from('employees').select('tenant_id'),
+      supabase.from('admin_accounts').select('tenant_id,role'),
+    ]);
+    const e={},a={};
+    (emps||[]).forEach(x=>{ if(x.tenant_id) e[x.tenant_id]=(e[x.tenant_id]||0)+1; });
+    (accts||[]).forEach(x=>{ if(x.tenant_id) a[x.tenant_id]=(a[x.tenant_id]||0)+1; });
+    setCounts({empl:e,accts:a});
+    setLoading(false);
+  },[]);
+  useEffect(()=>{ load(); },[load]);
+
+  const setPlan=async(t,plan)=>{
+    if(plan===t.plan) return;
+    const {error}=await supabase.from('tenants').update({plan}).eq('id',t.id);
+    if(error){ addToast("Failed: "+error.message,"error"); return; }
+    await supabase.from('registrations').update({module:plan}).eq('id',t.id); // keep the inbox row in sync
+    await logAudit(adminUser,'plan_changed',t.company||t.email,`→ ${plan}`);
+    addToast(`${t.company||t.email} plan set to ${plan} — applies on their next login.`,"success"); load();
+  };
+  const doToggle=async()=>{
+    const t=confirmSuspend; setConfirmSuspend(null);
+    const status=t.status==='suspended'?'active':'suspended';
+    const {error}=await supabase.from('tenants').update({status}).eq('id',t.id);
+    if(error){ addToast("Failed: "+error.message,"error"); return; }
+    await logAudit(adminUser,status==='suspended'?'tenant_suspended':'tenant_reactivated',t.company||t.email,null);
+    addToast(status==='suspended'?`${t.company||t.email} suspended — all their logins are now blocked.`:`${t.company||t.email} reactivated.`,status==='suspended'?"info":"success"); load();
+  };
+
+  if(missing) return (
+    <div className="bg-amber-50 border border-amber-200 rounded-2xl px-6 py-5 text-sm text-amber-800 max-w-2xl">
+      <b>The customers table isn't in your database yet.</b> Run <span className="font-mono">supabase/migration-payroll.sql</span> in the Supabase SQL Editor — it creates it and imports your already-approved customers automatically.
+    </div>
+  );
+
+  return (
+    <div>
+      <div className="mb-5">
+        <h1 className="text-xl font-black text-ink flex items-center gap-2"><Icon name="building" className="w-5 h-5 text-brand-600"/> Customers</h1>
+        <p className="text-sm text-gray-500 mt-0.5">One row per business — manage plans and suspend non-payers. New sign-ups arrive in Registrations and graduate here on approval.</p>
+      </div>
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="border-b border-gray-100 bg-gray-50/60">
+              {["Company","Contact","Plan","Employees","Logins","Since","Status","Actions"].map(h=><th key={h} className="text-left text-xs font-semibold text-gray-400 uppercase tracking-wider px-5 py-3">{h}</th>)}
+            </tr></thead>
+            <tbody className="divide-y divide-gray-50">
+              {loading?<tr><td colSpan={8} className="text-center py-12 text-gray-400 text-sm">Loading…</td></tr>
+               :rows.length===0?<tr><td colSpan={8} className="text-center py-12 text-gray-400 text-sm">No customers yet — approve a registration and it appears here.</td></tr>
+               :rows.map(t=>(
+                <tr key={t.id} className={`hover:bg-gray-50/60 ${t.status==='suspended'?"bg-red-50/40":""}`}>
+                  <td className="px-5 py-3.5"><div className="font-semibold text-gray-800">{t.company||"—"}</div><div className="text-[10px] font-mono text-gray-400" title={t.id}>tenant {String(t.id).slice(0,8)}</div></td>
+                  <td className="px-5 py-3.5"><div className="text-gray-700">{t.contact_name||"—"}</div><div className="text-xs text-gray-400">{t.email}{t.phone?` · ${t.phone}`:""}</div></td>
+                  <td className="px-5 py-3.5">
+                    <select value={t.plan||"All-in-One"} onChange={e=>setPlan(t,e.target.value)} title="Change plan"
+                      className="text-xs font-bold px-2 py-1.5 rounded-lg bg-brand-50 text-brand-700 border border-brand-200 cursor-pointer hover:border-brand-400 focus:outline-none">
+                      {["Attendance","Payroll","Directory","All-in-One"].map(m=><option key={m} value={m}>{m}</option>)}
+                    </select>
+                  </td>
+                  <td className="px-5 py-3.5 text-center font-mono text-xs">{counts.empl[t.id]||0}</td>
+                  <td className="px-5 py-3.5 text-center font-mono text-xs">{counts.accts[t.id]||0}</td>
+                  <td className="px-5 py-3.5 text-xs text-gray-500 whitespace-nowrap">{t.created_at?fmtDate(String(t.created_at).slice(0,10)):"—"}</td>
+                  <td className="px-5 py-3.5"><span className={`text-xs font-bold px-2.5 py-1 rounded-full border ${t.status==='suspended'?"bg-red-50 text-red-700 border-red-200":"bg-brand-50 text-brand-700 border-brand-200"}`}>{t.status==='suspended'?"Suspended":"Active"}</span></td>
+                  <td className="px-5 py-3.5">
+                    <button onClick={()=>setConfirmSuspend(t)} className={`text-xs font-bold px-3 py-1.5 rounded-lg ${t.status==='suspended'?"bg-brand-500 text-white hover:bg-brand-600":"bg-red-50 text-red-600 hover:bg-red-100"}`}>{t.status==='suspended'?"Reactivate":"Suspend"}</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {confirmSuspend&&(
+        <div className="fixed inset-0 bg-slate-900/25 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={()=>setConfirmSuspend(null)}>
+          <div className="bg-white rounded-3xl p-7 max-w-sm w-full shadow-2xl" onClick={e=>e.stopPropagation()}>
+            <h2 className="text-lg font-black text-ink mb-2">{confirmSuspend.status==='suspended'?"Reactivate":"Suspend"} customer</h2>
+            <p className="text-sm text-gray-500 mb-5">{confirmSuspend.status==='suspended'
+              ?<>Restore access for <b>{confirmSuspend.company||confirmSuspend.email}</b>? Their admins and employees can sign in again.</>
+              :<>Suspend <b>{confirmSuspend.company||confirmSuspend.email}</b>? Every login on this account (admins, employees, kiosks) will be blocked until reactivated. Their data is kept.</>}</p>
+            <div className="flex gap-3">
+              <button onClick={()=>setConfirmSuspend(null)} className="flex-1 border border-gray-200 text-gray-600 text-sm font-semibold py-2.5 rounded-xl hover:bg-gray-50">Cancel</button>
+              <button onClick={doToggle} className={`flex-1 text-white text-sm font-bold py-2.5 rounded-xl ${confirmSuspend.status==='suspended'?"bg-brand-500 hover:bg-brand-600":"bg-red-600 hover:bg-red-700"}`}>{confirmSuspend.status==='suspended'?"Reactivate":"Suspend"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // ADMIN REGISTRATIONS — review sign-ups from the Register page; approve to
 // create the login account, or reject.
 // ════════════════════════════════════════════════════════════════════════════
@@ -3745,6 +3858,8 @@ function AdminRegistrations({ adminUser, addToast }) {
     const rev={status:'approved',reviewed_by:adminUser.username,reviewed_at:new Date().toISOString()};
     let {error:e2}=await supabase.from('registrations').update({...rev, tenant_id:r.id}).eq('id',r.id);
     if(e2 && /tenant_id/.test(e2.message)) await supabase.from('registrations').update(rev).eq('id',r.id);
+    // Graduate the signup into a customer record (best-effort pre-migration)
+    try{ await supabase.from('tenants').insert({id:r.id,company:r.company||null,contact_name:r.name,email:r.email,phone:r.phone||null,plan:r.module||'All-in-One',status:'active'}); }catch{}
     setBusy(null); addToast(`${r.name} approved — tenant created for "${r.username}".`,"success"); load();
   };
   const reject=async r=>{ setBusy(r.id); await supabase.from('registrations').update({status:'rejected',reviewed_by:adminUser.username,reviewed_at:new Date().toISOString()}).eq('id',r.id); setBusy(null); addToast(`${r.name}'s registration rejected.`,"info"); load(); };
@@ -3753,6 +3868,7 @@ function AdminRegistrations({ adminUser, addToast }) {
     if(module===(r.module||"All-in-One")) return;
     const {error}=await supabase.from('registrations').update({module}).eq('id',r.id);
     if(error){ addToast("Failed: "+error.message,"error"); return; }
+    if(r.tenant_id){ try{ await supabase.from('tenants').update({plan:module}).eq('id',r.tenant_id); }catch{} }
     await logAudit(adminUser,'plan_changed',r.company||r.name,`${r.module||'All-in-One'} → ${module}`);
     addToast(`${r.company||r.name} plan set to ${module}${r.status==='approved'?" — applies on their next login":""}.`,"success");
     load();
@@ -4773,6 +4889,7 @@ function AdminPortal({ employees, setEmployees, allAttendance, leaves, roles, ad
     ]},
     {k:"payroll",  l:"Payroll",  icon:"payroll",  mod:"payroll"},
     {g:"Admin",icon:"shield",superOnly:true,kids:[
+      {k:"customers", l:"Customers", icon:"building",superOnly:true},
       {k:"registrations", l:"Registrations", icon:"userplus",superOnly:true},
       {k:"accounts", l:"Accounts", icon:"accounts",superOnly:true},
       {k:"audit",    l:"Settings", icon:"settings",superOnly:true},
@@ -4921,6 +5038,7 @@ function AdminPortal({ employees, setEmployees, allAttendance, leaves, roles, ad
           {page==="behavior"&&<AdminBehavior employees={employees} allAttendance={allAttendance} leaves={leaves} activeDept={activeDept}/>}
           {page==="reports"&&<AdminReports employees={employees} allAttendance={allAttendance} leaves={leaves} addToast={addToast} initialStatus={reportFilter} jumpRange={reportRange} activeDept={activeDept} activeRole={activeRole} reloadData={reloadData} quietRefresh={quietRefresh} isSuperAdmin={isSuperAdmin} adminUser={adminUser}/>}
           {page==="audit"&&isSuperAdmin&&<AdminAuditLog addToast={addToast} roles={roleOptions}/>}
+          {page==="customers"&&isSuperAdmin&&<AdminCustomers adminUser={adminUser} addToast={addToast}/>}
           {page==="registrations"&&isSuperAdmin&&<AdminRegistrations adminUser={adminUser} addToast={addToast}/>}
           {page==="accounts"&&<AdminAccounts adminUser={adminUser} addToast={addToast} allDepartments={allDepartments}/>}
         </main>

@@ -4824,7 +4824,7 @@ function AdminPortal({ employees, setEmployees, allAttendance, leaves, roles, ad
   // The admin-backoffice domain (VITE_APP_MODE=admin) opens on Registrations; the app opens on the dashboard.
   // Land on the page that matches the tenant's plan (admin domain → Registrations).
   const [page,setPage]=useState(
-    ADMIN_ONLY ? "registrations" :
+    ADMIN_ONLY ? "customers" :
     (PAGE_OPTIONS.map(([k])=>k).find(k=>canPage(adminUser,k)&&(
       k==="employees"||k==="directory"&&hasMod(adminUser,'directory')||k==="payroll"&&hasMod(adminUser,'payroll')||["dashboard","schedules","leaves","manpower","behavior","reports"].includes(k)&&hasMod(adminUser,'attendance')
     ))||"employees")
@@ -4900,7 +4900,11 @@ function AdminPortal({ employees, setEmployees, allAttendance, leaves, roles, ad
   ];
   const goToReports=(status,from,to)=>{setRF(status);setReportRange({from,to,n:(reportRange?.n||0)+1});setPage("reports");};
   const navOk=n=>(!n.superOnly||isSuperAdmin)&&(!n.mod||hasMod(adminUser,n.mod))&&(n.superOnly||!n.k||canPage(adminUser,n.k));
-  const tree=NAV_TREE.map(n=>n.kids?{...n,kids:n.kids.filter(navOk)}:n).filter(n=>n.kids?(n.kids.length>0&&(!n.superOnly||isSuperAdmin)):navOk(n));
+  // The admin domain is a pure backoffice: only the platform pages, as flat buttons.
+  // The app domain is purely the customer HR suite: the Admin group never shows there.
+  const tree=ADMIN_ONLY
+    ? (NAV_TREE.find(n=>n.g==="Admin")?.kids||[]).filter(navOk)
+    : NAV_TREE.filter(n=>!(APP_ONLY&&n.superOnly)).map(n=>n.kids?{...n,kids:n.kids.filter(navOk)}:n).filter(n=>n.kids?(n.kids.length>0&&(!n.superOnly||isSuperAdmin)):navOk(n));
   const flatNav=tree.flatMap(n=>n.kids||[n]);
   const [openGroups,setOpenGroups]=useState(()=>{const o={};NAV_TREE.forEach(n=>{if(n.kids&&n.kids.some(c=>c.k===page))o[n.g]=true;});return o;});
   const toggleGroup=g=>setOpenGroups(p=>({...p,[g]:!p[g]}));
@@ -5088,7 +5092,9 @@ const SCREEN_PARAM = (() => { try { return new URLSearchParams(window.location.s
 // ════════════════════════════════════════════════════════════════════════════
 function AppInner() {
   // ── Restore session on load so reload does NOT log you out ────────────────
-  const savedUser = loadSession();
+  // (On the admin backoffice domain only platform staff sessions count.)
+  const restored = loadSession();
+  const savedUser = (ADMIN_ONLY && restored && restored.role!=="super_admin") ? null : restored;
   const savedKiosk = loadKioskSession();
   // Scope all data queries to the signed-in tenant BEFORE the first load runs.
   setTenant((savedUser||savedKiosk)?.tenantId||null);
@@ -5245,8 +5251,12 @@ function AppInner() {
   },[addToast]);
 
   // ── Auth — persist session ────────────────────────────────────────────────
-  const handleLogin=user=>{ saveSession(user); setAdminUser(user); setTenant(user.tenantId||null); setScreen("admin"); loadData(); };
-  const handleLogout=()=>{ clearSession(); setAdminUser(null); setTenant(null); setScreen("landing"); addToast("Signed out.","info"); };
+  const handleLogin=user=>{
+    // The admin domain is the BilisOps backoffice — customer + employee accounts sign in on the app domain.
+    if (ADMIN_ONLY && user.role!=="super_admin") { addToast("This is the BilisOps admin console. Please sign in at "+(APP_URL||"the app site")+".","error"); return; }
+    saveSession(user); setAdminUser(user); setTenant(user.tenantId||null); setScreen("admin"); loadData();
+  };
+  const handleLogout=()=>{ clearSession(); setAdminUser(null); setTenant(null); setScreen((APP_ONLY||ADMIN_ONLY)?"admin-login":"landing"); addToast("Signed out.","info"); };
   const handleKioskLogin=user=>{ saveKioskSession(user); setKioskUser(user); setTenant(user.tenantId||null); if (COMBINED) setScreen("kiosk-choose"); loadData(); };
   const handleKioskLogout=()=>{ clearKioskSession(); setKioskUser(null); setTenant(null); setScreen(COMBINED ? "kiosk-login" : KIOSK_ONLY ? KIOSK_HOME : "landing"); addToast("Kiosk signed out.","info"); };
   // Combined APK → back returns to the kiosk chooser. Dedicated-kiosk builds have no

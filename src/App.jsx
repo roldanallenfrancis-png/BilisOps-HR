@@ -1032,19 +1032,22 @@ function AdminLogin({ onLogin, onBack, onRegister }) {
       const {data,error}=await supabase.from('admin_accounts').select('*').eq('username',u.trim().toLowerCase()).eq('is_active',true).maybeSingle();
       if (error) throw error;
       if (!data||data.password_hash!==btoa(p)) { setErr("Incorrect username or password."); setLoading(false); return; }
+      // Tenant accounts: plan + status come from the customer record (tenants),
+      // falling back to the registration for pre-migration databases. The
+      // suspension check MUST run before the forced-password-change branch,
+      // or a suspended customer could slip in via that flow.
+      let tRow=null;
+      if (data.tenant_id) {
+        ({data:tRow}=await supabase.from('tenants').select('plan,status').eq('id',data.tenant_id).maybeSingle());
+        if (tRow?.status==='suspended') { setErr("This account is suspended. Please contact BilisOps."); setLoading(false); return; }
+      }
       if (data.must_change_password) { setMustChange(data); setLoading(false); return; } // force password change first
       await supabase.from('admin_accounts').update({last_login:new Date().toISOString()}).eq('id',data.id);
-      // Tenant accounts: plan + status come from the customer record (tenants),
-      // falling back to the registration for pre-migration databases.
       let modules=null;
-      if (data.tenant_id) {
-        const {data:t}=await supabase.from('tenants').select('plan,status').eq('id',data.tenant_id).maybeSingle();
-        if (t?.status==='suspended') { setErr("This account is suspended. Please contact BilisOps."); setLoading(false); return; }
-        if (data.role!=='employee') {
-          let planName=t?.plan;
-          if(!planName){ const {data:reg}=await supabase.from('registrations').select('module').eq('id',data.tenant_id).maybeSingle(); planName=reg?.module; }
-          modules=modulesOf(planName);
-        }
+      if (data.tenant_id && data.role!=='employee') {
+        let planName=tRow?.plan;
+        if(!planName){ const {data:reg}=await supabase.from('registrations').select('module').eq('id',data.tenant_id).maybeSingle(); planName=reg?.module; }
+        modules=modulesOf(planName);
       }
       const user={id:data.id,username:data.username,role:data.role,departmentAccess:data.department_access||null,tenantId:data.tenant_id||null,employeeId:data.employee_id||null,pageAccess:Array.isArray(data.page_access)&&data.page_access.length?data.page_access:null,modules,loginTime:new Date().toLocaleTimeString("en-PH")};
       onLogin(user);
@@ -3937,7 +3940,7 @@ function AdminRegistrations({ adminUser, addToast }) {
             <h2 className="text-lg font-black text-ink mb-2">Delete registration</h2>
             <p className="text-sm text-gray-500 mb-3">Remove <span className="font-bold">{confirmDel.name}</span>'s registration? This can't be undone.</p>
             {confirmDel.status==='approved'&&(
-              <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl px-3 py-2.5 mb-5">⚠ This registration holds the customer's <b>plan ({confirmDel.module||"All-in-One"})</b>. Deleting it resets their account to ALL modules on next login. To change their access, use the plan dropdown instead.</p>
+              <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl px-3 py-2.5 mb-5">⚠ This is an <b>approved customer's</b> signup record. Their plan is safe if they exist in <b>Customers</b>; on older databases without the customers table, deleting this resets them to ALL modules. Prefer managing them from the Customers page.</p>
             )}
             <div className="flex gap-3">
               <button onClick={()=>setConfirmDel(null)} className="flex-1 border border-gray-200 text-gray-600 text-sm font-semibold py-2.5 rounded-xl hover:bg-gray-50">Cancel</button>

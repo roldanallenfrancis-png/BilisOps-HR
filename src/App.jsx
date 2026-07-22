@@ -510,36 +510,9 @@ function BrandMark({ className="w-10 h-10 rounded-2xl", inverted=false }) {
 }
 
 function LandingPage({ onSelect }) {
-  const [regModule,setRegModule]=useState(null);   // non-null → register popup open, value = chosen module
-  const [showDemo,setShowDemo]=useState(false);     // demo chooser popup
-  const DEMOS=[
-    {key:"Attendance", icon:"clock",     desc:"QR & face check-in, schedules, and live reports."},
-    {key:"Payroll",    icon:"payroll",   desc:"Automated pay runs, computations, and payslips."},
-    {key:"Directory",  icon:"directory", desc:"Employee records, org structure, and documents."},
-    {key:"All-in-One", icon:"dashboard", desc:"The complete BilisOps HR suite in one account."},
-  ];
+  const [regModule,setRegModule]=useState(null);   // non-null → register popup open (always the full HRIS)
   return (
     <div className="scene-3d-light relative min-h-screen bg-gradient-to-b from-white via-mist to-brand-50">
-      {/* Demo chooser popup — pick a module, then register for that demo */}
-      {showDemo&&(
-        <div className="!fixed inset-0 bg-slate-900/25 !z-[100] flex items-center justify-center p-4 sm:p-6" onClick={()=>setShowDemo(false)}>
-          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] overflow-y-auto p-6 sm:p-8" onClick={e=>e.stopPropagation()}>
-            <button onClick={()=>setShowDemo(false)} title="Close" className="absolute top-4 right-4 w-9 h-9 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 flex items-center justify-center text-lg">✕</button>
-            <h1 className="text-2xl font-black text-ink">Choose your demo</h1>
-            <p className="text-gray-500 text-sm mt-1 mb-5">Pick the module you want to try — your trial account starts there.</p>
-            <div className="grid sm:grid-cols-2 gap-3">
-              {DEMOS.map(({key,icon,desc})=>(
-                <button key={key} onClick={()=>{setShowDemo(false);setRegModule(key);}}
-                  className="group text-left border border-gray-200 hover:border-brand-400 rounded-xl p-4 transition-colors">
-                  <div className="w-10 h-10 bg-brand-50 text-brand-600 rounded-lg flex items-center justify-center mb-3 group-hover:bg-brand-500 group-hover:text-white transition-colors"><Icon name={icon} className="w-5 h-5"/></div>
-                  <div className="font-black text-ink text-sm mb-1">{key}</div>
-                  <div className="text-gray-500 text-xs leading-relaxed">{desc}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
       {/* Register popup — sign-ups happen right here on the landing, no redirect */}
       {regModule&&(
         <div className="!fixed inset-0 bg-slate-900/25 !z-[100] flex items-center justify-center p-4 sm:p-6" onClick={()=>setRegModule(null)}>
@@ -583,7 +556,7 @@ function LandingPage({ onSelect }) {
         </p>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mt-8">
           <button onClick={()=>setRegModule("All-in-One")} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-brand-500 text-white text-sm font-bold px-7 py-3.5 rounded-full hover:bg-brand-600 transition-colors shadow-brand"><Icon name="userplus" className="w-5 h-5"/> Get started free</button>
-          <button onClick={()=>setShowDemo(true)} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-white text-ink text-sm font-bold px-7 py-3.5 rounded-full border border-gray-200 hover:border-brand-300 transition-colors shadow-sm"><Icon name="dashboard" className="w-5 h-5"/> See the demo</button>
+          <button onClick={()=>setRegModule("All-in-One")} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-white text-ink text-sm font-bold px-7 py-3.5 rounded-full border border-gray-200 hover:border-brand-300 transition-colors shadow-sm"><Icon name="dashboard" className="w-5 h-5"/> See the demo</button>
         </div>
       </section>
 
@@ -717,7 +690,7 @@ function RegisterForm({ onSignIn, onAfterDone, afterDoneLabel="Back to sign in �
   return (
     <>
       <h1 className="text-2xl font-black text-ink">Start your free trial</h1>
-      <span className="inline-block bg-brand-50 text-brand-700 border border-brand-100 text-xs font-bold px-3 py-1 rounded-lg mt-2 mb-5">Plan: Free Trial · {module}</span>
+      <span className="inline-block bg-brand-50 text-brand-700 border border-brand-100 text-xs font-bold px-3 py-1 rounded-lg mt-2 mb-5">Plan: Free Trial · Complete HRIS</span>
       <div className="space-y-4">
         {err&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-lg">⚠ {err}</div>}
         <div><label className={labelCls}>Business Name <span className="text-red-500">*</span></label>
